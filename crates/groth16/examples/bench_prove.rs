@@ -15,8 +15,9 @@
 //! For a controlled CPU comparison, set `BENCH_MERGE_BELOW=0` to disable merging.
 //! Set `BENCH_WARM_BACKEND=cpu` to time Xark alone while still checking each
 //! proof with Arkworks. The default times both prover adapters.
-//! For the Privacy Rings escrow fixture, set `BENCH_ESCROW_STATEMENTS` to
-//! the directory containing `public.json` and `public-changed.json`.
+//! For the Privacy Rings escrow or withdrawal fixture, set
+//! `BENCH_PUBLIC_STATEMENTS` to the directory containing `public.json` and
+//! `public-changed.json`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
@@ -25,7 +26,7 @@ use std::time::Instant;
 
 use ark_bn254::{Bn254, Fr};
 use ark_groth16::Groth16;
-use ark_serialize::{CanonicalSerialize, Compress};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress};
 use ark_snark::SNARK;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -200,16 +201,28 @@ fn reduced(xbc: &[u8]) -> xark_ir::R1csProgram {
         .into_r1cs()
 }
 
-fn escrow_public_hash(path: &std::path::Path) -> Fr {
-    let bytes = std::fs::read(path).expect("read escrow public statement");
+fn privacy_rings_public_hash(path: &std::path::Path) -> Fr {
+    let bytes = std::fs::read(path).expect("read Privacy Rings public statement");
     let statement: BTreeMap<String, String> =
-        serde_json::from_slice(&bytes).expect("decode escrow public statement");
-    assert_eq!(statement.len(), 1, "escrow must have one public input");
+        serde_json::from_slice(&bytes).expect("decode Privacy Rings public statement");
+    assert_eq!(
+        statement.len(),
+        1,
+        "Privacy Rings must have one public input"
+    );
     statement
         .get("public_hash")
-        .expect("escrow statement must contain public_hash")
+        .expect("Privacy Rings statement must contain public_hash")
         .parse()
-        .expect("parse escrow public_hash as a field element")
+        .expect("parse public_hash as a field element")
+}
+
+fn checked_arkworks_encoding<A: CanonicalSerialize, B: CanonicalDeserialize>(value: &A) -> B {
+    let mut bytes = Vec::new();
+    value
+        .serialize_compressed(&mut bytes)
+        .expect("serialize benchmark artifact");
+    B::deserialize_compressed(bytes.as_slice()).expect("validate Arkworks benchmark artifact")
 }
 
 fn main() {
@@ -359,19 +372,24 @@ fn main() {
             public.len() + 1,
             "verifying key and circuit have different public input counts"
         );
-        let changed_public_hash = std::env::var_os("BENCH_ESCROW_STATEMENTS").map(|directory| {
-            let directory = std::path::PathBuf::from(directory);
-            let expected = escrow_public_hash(&directory.join("public.json"));
-            let changed = escrow_public_hash(&directory.join("public-changed.json"));
-            assert_eq!(
-                public,
-                [expected],
-                "witness public input does not match the escrow statement"
-            );
-            assert_ne!(expected, changed, "changed escrow statement must differ");
-            changed
-        });
-        let vk: ark_groth16::VerifyingKey<Bn254> = convert(&pk.vk);
+        let changed_public_hash = std::env::var_os("BENCH_PUBLIC_STATEMENTS")
+            .or_else(|| std::env::var_os("BENCH_ESCROW_STATEMENTS"))
+            .map(|directory| {
+                let directory = std::path::PathBuf::from(directory);
+                let expected = privacy_rings_public_hash(&directory.join("public.json"));
+                let changed = privacy_rings_public_hash(&directory.join("public-changed.json"));
+                assert_eq!(
+                    public,
+                    [expected],
+                    "witness public input does not match the Privacy Rings statement"
+                );
+                assert_ne!(
+                    expected, changed,
+                    "changed Privacy Rings statement must differ"
+                );
+                changed
+            });
+        let vk: ark_groth16::VerifyingKey<Bn254> = checked_arkworks_encoding(&pk.vk);
         let prepared_vk = Groth16::<Bn254>::process_vk(&vk).expect("prepare Arkworks key");
         let mut cfg = ProverConfig::default();
         if let Some(value) = std::env::var_os("BENCH_MERGE_BELOW") {
@@ -420,26 +438,31 @@ fn main() {
         // Reject the batch before printing any timings if any proof fails.
         for (prover, batch) in provers.iter().zip(&samples) {
             for (index, (_, proof)) in batch.iter().enumerate() {
-                let proof: ark_groth16::Proof<Bn254> = convert(proof);
-                let valid =
-                    Groth16::<Bn254>::verify_with_processed_vk(&prepared_vk, public, &proof)
+                let ark_proof: ark_groth16::Proof<Bn254> = checked_arkworks_encoding(proof);
+                let ark_valid =
+                    Groth16::<Bn254>::verify_with_processed_vk(&prepared_vk, public, &ark_proof)
                         .expect("verify measured proof with Arkworks");
+                let xark_valid = xark_groth16::verify(&pk.vk, public, proof)
+                    .expect("verify measured proof with Xark");
                 assert!(
-                    valid,
-                    "{} proof {} failed verification",
+                    ark_valid && xark_valid,
+                    "{} proof {} failed verification (Arkworks={ark_valid}, Xark={xark_valid})",
                     prover.name(),
                     index + 1
                 );
                 if let Some(changed) = changed_public_hash.as_ref().filter(|_| index == 0) {
-                    let accepts_changed = Groth16::<Bn254>::verify_with_processed_vk(
+                    let changed = std::slice::from_ref(changed);
+                    let ark_accepts = Groth16::<Bn254>::verify_with_processed_vk(
                         &prepared_vk,
-                        std::slice::from_ref(changed),
-                        &proof,
+                        changed,
+                        &ark_proof,
                     )
-                    .expect("verify changed escrow statement with Arkworks");
+                    .expect("verify changed statement with Arkworks");
+                    let xark_accepts = xark_groth16::verify(&pk.vk, changed, proof)
+                        .expect("verify changed statement with Xark");
                     assert!(
-                        !accepts_changed,
-                        "{} proof accepted under changed escrow statement",
+                        !ark_accepts && !xark_accepts,
+                        "{} proof accepted under changed statement (Arkworks={ark_accepts}, Xark={xark_accepts})",
                         prover.name()
                     );
                 }
