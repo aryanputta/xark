@@ -10,6 +10,8 @@
 //! bench_prove stream <circuit.xbc> <pk.bin> <inputs.json> [--source xbc|min] [--tile N] [--chunk N]
 //! BENCH_TIME=1 bench_prove warm <circuit.xbc> <reduced pk.bin> <inputs.json> [proofs] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
+//! BENCH_TIME=1 bench_prove query-msm-xark <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
+//! bench_prove query-msm-export <circuit.xbc> <reduced pk.bin> <statement-dir> <new-output-file>
 //! ```
 //! `--reduced` / `--source xbc` prove the template-reduced circuit (key from
 //! `setup-reduced`); otherwise the boundary-minimized circuit `xark setup` keys.
@@ -30,6 +32,11 @@
 //! group result against Arkworks before reporting timings. Use
 //! `RAYON_NUM_THREADS` to set the shared worker budget and `NO_GLV=1` to
 //! disable GLV for Xark's query benchmark.
+//! `query-msm-xark` times Xark's B1 and B2 queries in separate batches and
+//! checks each result against precomputed Arkworks references.
+//! `query-msm-export` writes both ordered queries, the witness scalars, and
+//! Arkworks reference sums for a same-input benchmark. Use reproducible test
+//! fixtures and keep the witness-bearing export in local scratch storage.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
@@ -316,9 +323,16 @@ fn main() {
     }
     let args: Vec<String> = std::env::args().collect();
     let mode = args[1].as_str();
-    if mode == "query-msm" {
-        query_msm::run(&args[2..]);
-        return;
+    match mode {
+        "query-msm" | "query-msm-xark" => {
+            query_msm::run(&args[2..], mode == "query-msm-xark");
+            return;
+        }
+        "query-msm-export" => {
+            query_msm::export(&args[2..]);
+            return;
+        }
+        _ => {}
     }
     let xbc = std::fs::read(&args[2]).unwrap();
     if mode == "check-witness" || mode == "export-iden3" {
