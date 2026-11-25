@@ -1,0 +1,47 @@
+[package]
+name = "xark-wasm"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+description = "WebAssembly bindings for generating xark Groth16 (BN254) proofs in the browser / Node."
+repository = "https://github.com/blueshift-gg/xark"
+
+[lib]
+name = "xark_wasm"
+crate-type = ["cdylib", "rlib"]
+
+# Single-threaded by design: this crate compiles and runs on any WebAssembly
+# host (browsers, Node 20+, Cloudflare Workers, edge runtimes). Rayon (pulled
+# in transitively via `xark-ir`) falls back to serial execution on
+# `wasm32-unknown-unknown` without threads, and the arkworks `parallel` feature
+# stays off so MSM/FFT run single-threaded too.
+
+[dependencies]
+# All xark deps with `default-features = false` so the arkworks `parallel`
+# (rayon) feature stays OFF — rayon's thread pool (and `std::time`) are
+# unsupported on `wasm32-unknown-unknown`, and enabling `parallel` here would
+# panic the prover.
+# Kept explicit for default-features = false; bump on release.
+xark-ir = { path = "../ir", version = "0.5.0", default-features = false }
+xark-prover = { path = "../prover", version = "0.5.0", default-features = false }
+xark-schema.workspace = true
+# The streaming prover (`proveStreaming`) and its worker kernels.
+xark-groth16.workspace = true
+# `poseidon2`: the gadget's hash, natively, so a client can hash as the circuit does.
+xark-poseidon2.workspace = true
+
+# Only the arkworks crates actually named in `lib.rs`. `ark-ff` / `ark-ec` are
+# pulled transitively (via `xark-groth16` etc.) with the right features — the `parallel`-OFF guarantee comes from the `xark-*`
+# deps above being built `default-features = false`, not from pinning them here.
+ark-bn254 = { version = "0.6", default-features = false, features = ["curve"] }
+ark-serialize = { version = "0.6", default-features = false, features = ["std"] }
+
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+getrandom = { version = "0.2", features = ["js"] }
+rand = "0.8"
+sha2 = "0.11"
+rand_chacha = { version = "0.3", default-features = false }
+ark-ff = { version = "0.6", default-features = false, features = ["std"] }
+console_error_panic_hook = "0.1"
+serde_json = "1"

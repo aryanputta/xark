@@ -1,0 +1,12 @@
+[package]
+name = "from_const"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[lib]
+[dependencies]
+xark = { path = "../../crates/lang", version = "0.5.0" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(xark)'] }
+

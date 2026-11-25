@@ -1,0 +1,1093 @@
+//! `xark` frontend subcommands: `init` (scaffold), `build` (Rust → wasm32 →
+//! R1CS), `test` and `check` (editor-facing validation). The backend subcommands
+//! (`setup`/`prove`/`verify`/`export`/`ceremony`/`inspect`) live in the
+//! [`crate::commands`] module, which also holds the clap arguments of these.
+
+use std::path::PathBuf;
+use std::process::Command;
+
+/// This process's executable, opened as it starts: what [`build_key`] hashes, so a
+/// build names the `xark` that lowered it even when another replaces it meanwhile.
+pub static EXE: std::sync::OnceLock<Option<std::fs::File>> = std::sync::OnceLock::new();
+
+/// [`build`] the crate in `crate_dir` over BN254 into its default output directory:
+/// the build other commands run first.
+pub fn cmd_build(crate_dir: &str) -> i32 {
+    build(crate_dir, None, "bn254", false, false)
+}
+
+/// The `xark build` command: [`build`], then what to run next. (The builds
+/// other commands run first — `test`, `profile`, `prove`'s — stay quiet about
+/// it.)
+pub fn cmd_build_command(args: &crate::commands::BuildArgs) -> i32 {
+    // At a project's root: every circuit, its keys and clients, then the programs.
+    if let Some(root) = crate::commands::project::root_at(Some(&args.crate_dir)) {
+        return crate::commands::project::build(&root, args.check);
+    }
+    if args.check {
+        eprintln!("error: `--check` is for a project's root (the directory with `xark.toml`)");
+        return 2;
+    }
+    let dir = &args.crate_dir;
+    let code = build(dir, args.out.as_deref(), &args.field, false, args.emit_json);
+    if code == 0 {
+        // Keys are BN254's: over another field, what's left is counting constraints.
+        let step = if args.field == "bn254" {
+            (
+                format!("xark setup {dir}"),
+                "generate the proving/verifying keys",
+            )
+        } else {
+            (
+                format!("xark profile {dir} --field {}", args.field),
+                "where the constraints go, over this field",
+            )
+        };
+        eprintln!("\n{}", crate::style::next_steps(&[step]));
+    }
+    code
+}
+
+/// `xark build`: `cargo` (any stable toolchain) builds the crate in `crate_dir` for
+/// wasm32, then `xark-frontend` lowers the module over `field` (as
+/// [`parse_field`](crate::commands::parse_field) normalizes it) into `out`
+/// (default: `<crate>/target/xark/<name>/`). `profile` also writes `profile.json`
+/// (each constraint's source line, function chain and kind: `xark profile` and
+/// `xark test` read it). `emit_json` also writes the human-readable
+/// `circuit.json`; nothing reads it back and it is multi-GB on large circuits, so
+/// a normal build skips it.
+pub fn build(
+    crate_dir: &str,
+    out: Option<&str>,
+    field: &str,
+    profile: bool,
+    emit_json: bool,
+) -> i32 {
+    let crate_dir = PathBuf::from(crate_root(crate_dir));
+    let cwd = std::env::current_dir().expect("cwd");
+    // Normalized: `.` leaves no `/./` in the paths printed below.
+    let crate_abs: PathBuf = cwd.join(&crate_dir).components().collect();
+    if !crate_abs.join("Cargo.toml").is_file() {
+        let what = if crate_abs.is_dir() {
+            "no Cargo.toml in"
+        } else {
+            "no such directory:"
+        };
+        eprintln!(
+            "xark: {what} {} (expected a circuit crate)",
+            crate_dir.display()
+        );
+        return 1;
+    }
+    // Named after the directory (`.` resolved) when `Cargo.toml` has no package.
+    let name = crate_abs
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.file_name().and_then(|s| s.to_str()).map(str::to_string))
+        .unwrap_or_else(|| "circuit".to_string());
+    // xark's artifacts live under the crate's `target/xark/`, and the wasm32 /
+    // `--cfg xark` build cache under `target/xark-wasm/` — both apart from the
+    // crate's normal `target/` so they don't thrash the one `cargo` and
+    // rust-analyzer use. Each circuit's artifacts land in a name-scoped
+    // `target/xark/<pkg-name>/`, the package name from `Cargo.toml`
+    // (`[package] name`) falling back to the directory name.
+    let xark_dir = crate_abs.join("target/xark");
+    let pkg_name = crate::xark_project::read_pkg_name(&crate_abs).unwrap_or_else(|| name.clone());
+    let out_abs = out
+        .map(|o| cwd.join(o))
+        .unwrap_or_else(|| xark_dir.join(&pkg_name));
+
+    build_stable(&crate_abs, &out_abs, &pkg_name, field, profile, emit_json)
+}
+
+/// Why the build in `dir` isn't current, judged by `artifact` (`circuit.xbc`, or
+/// `profile.json` for a profiled build), or `None` when it is: the artifact and the
+/// list of sources it came from (`deps`) exist, no source is newer than it, this
+/// `xark` isn't newer than it (another compiler may build another circuit), and, if
+/// `field` is given, it was built for that field.
+pub fn stale_build(dir: &std::path::Path, artifact: &str, field: Option<&str>) -> Option<String> {
+    let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let Some(made) = modified(&dir.join(artifact)) else {
+        return Some(format!("there is no {artifact}"));
+    };
+    if modified(&dir.join("deps")).is_none() {
+        return Some("there's no record of the sources it came from".into());
+    }
+    if let Some(src) = xark_prover::newer_source_than(dir, artifact) {
+        return Some(format!(
+            "{} changed since it was built",
+            shown(&src).display()
+        ));
+    }
+    let exe = std::env::current_exe().ok().and_then(|e| modified(&e));
+    if exe.is_none_or(|t| t > made) {
+        return Some("this xark is newer than the build".into());
+    }
+    if let Some(field) = field {
+        let want = xark_ir::FieldSpec::named(field);
+        let built = std::fs::read(dir.join("circuit.xbc"))
+            .ok()
+            .and_then(|b| xark_ir::function_decode::stream_field(&b));
+        let same = built.is_some_and(|b| match want.modulus_decimal.as_deref() {
+            Some(m) if want.name == "custom" => b.modulus_decimal == m,
+            _ => b.name == want.name,
+        });
+        if !same {
+            return Some(format!("it was built for another field than {field}"));
+        }
+    }
+    None
+}
+
+/// `path` relative to the current directory when it's under it (`src/lib.rs`), for
+/// messages; else as it is.
+fn shown(path: &std::path::Path) -> std::path::PathBuf {
+    let cwd = std::env::current_dir()
+        .ok()
+        .and_then(|c| c.canonicalize().ok());
+    let full = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    match cwd.as_deref().and_then(|c| full.strip_prefix(c).ok()) {
+        Some(rel) if rel.as_os_str().is_empty() => ".".into(),
+        Some(rel) => rel.to_path_buf(),
+        None => path.to_path_buf(),
+    }
+}
+
+/// Rebuild the circuit in the build directory `xark_dir` (`<crate>/target/xark/<name>/`)
+/// when it's stale, saying why: so a command never uses a circuit older than its
+/// source. A build directory elsewhere (`--out`) is left as it is. A build over
+/// another field (`--field`) counts as stale: `xark prove` needs BN254's.
+pub fn rebuild_if_stale(xark_dir: &std::path::Path) -> anyhow::Result<()> {
+    build_unless_current(xark_dir, false, true)
+}
+
+/// [`rebuild_if_stale`], and build a circuit that hasn't been built yet: for the
+/// commands that need only the build (`xark setup`, `xark client`, `xark inspect`).
+/// `bn254`: the command needs a BN254 circuit (keys, proofs and clients are BN254's);
+/// `xark inspect` takes one built over any field.
+pub fn build_if_needed(xark_dir: &std::path::Path, bn254: bool) -> anyhow::Result<()> {
+    build_unless_current(xark_dir, true, bn254)
+}
+
+fn build_unless_current(
+    xark_dir: &std::path::Path,
+    missing_too: bool,
+    bn254: bool,
+) -> anyhow::Result<()> {
+    build_unless_current_in(xark_dir, missing_too, bn254)?;
+    if bn254 {
+        require_bn254(&xark_dir.join("circuit.xbc"))?;
+    }
+    Ok(())
+}
+
+/// Refuse a `circuit.xbc` built over another field than BN254 (`xark build
+/// --field`): Groth16 keys, proofs and clients are BN254's. No check when it's
+/// missing (the command's own error).
+pub fn require_bn254(xbc: &std::path::Path) -> anyhow::Result<()> {
+    let Ok(bytes) = std::fs::read(xbc) else {
+        return Ok(());
+    };
+    match xark_ir::function_decode::stream_field(&bytes) {
+        Some(f) if f.name != "bn254" => anyhow::bail!(
+            "{} was built over another field ({}): Groth16 keys, proofs and clients are \
+             BN254's. Rebuild it with `xark build` (no `--field`)",
+            xbc.display(),
+            f.modulus_decimal
+        ),
+        _ => Ok(()),
+    }
+}
+
+fn build_unless_current_in(
+    xark_dir: &std::path::Path,
+    missing_too: bool,
+    bn254: bool,
+) -> anyhow::Result<()> {
+    let why = if !xark_dir.join("circuit.xbc").exists() {
+        if !missing_too {
+            return Ok(()); // a missing build is the command's own error
+        }
+        "no build found".to_string()
+    } else {
+        let Some(why) = stale_build(xark_dir, "circuit.xbc", bn254.then_some("bn254")) else {
+            return Ok(());
+        };
+        why
+    };
+    let krate = xark_dir
+        .parent()
+        .filter(|x| x.file_name() == Some("xark".as_ref()));
+    let krate = krate
+        .and_then(|x| x.parent())
+        .filter(|t| t.file_name() == Some("target".as_ref()))
+        .and_then(|t| t.parent())
+        .filter(|c| c.join("Cargo.toml").is_file());
+    let Some(krate) = krate else {
+        return Ok(());
+    };
+    eprintln!(
+        "{} {why}: running `xark build {}` first…",
+        crate::style::tag(),
+        shown(krate).display()
+    );
+    if cmd_build(&krate.display().to_string()) != 0 {
+        anyhow::bail!("the build failed; fix the circuit, then run this again");
+    }
+    Ok(())
+}
+
+/// Everything `xark build` writes (beside the keys and proofs of later commands).
+const BUILD_OUTPUTS: [&str; 9] = [
+    "circuit.xbc",
+    "sources.json",
+    "deps",
+    "circuit.json",
+    "r1cs.json",
+    "graph.dot",
+    "profile.json",
+    "digest",
+    "schema.json",
+];
+
+/// Written beside the outputs, after them: the [`build_key`] they came from, then
+/// `<sha256> <file>` for each output.
+const BUILD_KEY: &str = "build-key";
+const UNCHANGED: &str = "unchanged since the last build";
+
+/// What a build's outputs are made from, hashed: this `xark` (its executable's
+/// bytes), the options, the crate's path (the outputs' paths are relative to
+/// it), the `XARK_*` variables (lowering's knobs), the module, and every source
+/// file the module came from (`sources.json` quotes them). `None` when one can't
+/// be read: then nothing is reused.
+fn build_key(
+    built: &xark_frontend::Built,
+    crate_abs: &std::path::Path,
+    field: &str,
+    profile: bool,
+    emit_json: bool,
+) -> Option<String> {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    let mut part = |bytes: &[u8]| {
+        h.update((bytes.len() as u64).to_le_bytes());
+        h.update(bytes);
+    };
+    let mut exe = Vec::new();
+    let mut file = EXE.get()?.as_ref()?;
+    std::io::Seek::rewind(&mut file).ok()?;
+    std::io::Read::read_to_end(&mut file, &mut exe).ok()?;
+    part(&exe);
+    part(format!("{field} {profile} {emit_json}").as_bytes());
+    part(crate_abs.as_os_str().as_encoded_bytes());
+    let mut vars: Vec<_> = std::env::vars_os()
+        .filter(|(k, _)| k.as_encoded_bytes().starts_with(b"XARK_"))
+        .collect();
+    vars.sort();
+    for (k, v) in vars {
+        part(k.as_encoded_bytes());
+        part(v.as_encoded_bytes());
+    }
+    part(&built.wasm);
+    for src in &built.sources {
+        part(src.as_os_str().as_encoded_bytes());
+        part(&std::fs::read(src).ok()?);
+    }
+    Some(hex::encode(h.finalize()))
+}
+
+/// The `build-key` stamp for the outputs now in `out_abs`, made from `key`.
+fn build_stamp(out_abs: &std::path::Path, key: &str) -> Option<String> {
+    let mut stamp = format!("{key}\n");
+    for f in BUILD_OUTPUTS {
+        match std::fs::read(out_abs.join(f)) {
+            Ok(bytes) => stamp += &format!("{} {f}\n", crate::commands::sha256_hex(&bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+    }
+    Some(stamp)
+}
+
+fn write_build_key(out_abs: &std::path::Path, key: &Option<String>) {
+    if let Some(stamp) = key.as_ref().and_then(|k| build_stamp(out_abs, k)) {
+        let _ = std::fs::write(out_abs.join(BUILD_KEY), stamp);
+    }
+}
+
+/// Whether the outputs in `out_abs` are the ones a build with `key` made, untouched
+/// since: then they're marked current (as if written now) for `stale_build`.
+fn reuse_build(out_abs: &std::path::Path, key: &Option<String>) -> bool {
+    let (Some(key), Ok(stamp)) = (key, std::fs::read_to_string(out_abs.join(BUILD_KEY))) else {
+        return false;
+    };
+    if build_stamp(out_abs, key).is_none_or(|now| now != stamp) {
+        return false;
+    }
+    let now = std::time::SystemTime::now();
+    // `deps` last, as a build writes it.
+    let mut files = BUILD_OUTPUTS.map(|f| out_abs.join(f));
+    files.sort_by_key(|f| f.ends_with("deps"));
+    files.iter().filter(|f| f.exists()).all(|f| {
+        std::fs::File::options()
+            .write(true)
+            .open(f)
+            .and_then(|f| f.set_modified(now))
+            .is_ok()
+    })
+}
+
+/// `xark build`: `cargo` (any toolchain) builds the circuit
+/// for wasm32, then `xark-frontend` runs it to lower the circuit.
+fn build_stable(
+    crate_abs: &std::path::Path,
+    out_abs: &std::path::Path,
+    name: &str,
+    field: &str,
+    profile: bool,
+    emit_json: bool,
+) -> i32 {
+    eprintln!("{} building circuit `{name}`", crate::style::tag());
+    // One build at a time in `out_abs`: the outputs a build reuses or stamps are
+    // all one build's.
+    let lock = std::fs::create_dir_all(out_abs)
+        .and_then(|()| std::fs::File::create(out_abs.join(".build-lock")))
+        .and_then(|f| f.lock().map(|()| f));
+    let _lock = match lock {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("xark: locking {}: {e}", out_abs.display());
+            return 1;
+        }
+    };
+    // Clear the previous build's outputs unless they're reused: if this build
+    // fails, `prove`, `setup` and `export` must not go on with the old circuit, and
+    // a build without `--emit-json`/`--profile` must not leave stale views beside
+    // it. Keys stay: `prove` checks them against the circuit they were made for.
+    let clear = || {
+        for f in BUILD_OUTPUTS.iter().chain([&BUILD_KEY]) {
+            let path = out_abs.join(f);
+            if let Err(e) = std::fs::remove_file(&path)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!("xark: removing {}: {e}", path.display());
+                return false;
+            }
+        }
+        true
+    };
+    // Every build carries DWARF line tables (free; see `BuildOptions`), so errors
+    // and `--profile` attribution name source lines.
+    let target_dir = crate_abs.join("target/xark-wasm");
+    let built = xark_frontend::build_crate_with(crate_abs, &target_dir, &Default::default());
+    let built = match built {
+        Ok(b) => b,
+        Err(e) => {
+            clear();
+            eprintln!("xark: {e}");
+            return 1;
+        }
+    };
+    let key = build_key(&built, crate_abs, field, profile, emit_json);
+    if reuse_build(out_abs, &key) {
+        let digest = std::fs::read_to_string(out_abs.join("digest")).unwrap_or_default();
+        eprintln!(
+            "{} {UNCHANGED}: reusing its circuit (digest {})",
+            crate::style::tag(),
+            digest.trim()
+        );
+        return 0;
+    }
+    if !clear() {
+        return 1;
+    }
+    let mut lowered = match xark_frontend::lower_module(
+        &built.wasm,
+        xark_ir::FieldSpec::named(field),
+        profile,
+        emit_json,
+    ) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("{} {e}", crate::style::err("error:"));
+            return 1;
+        }
+    };
+    // The artifact must expand to exactly the circuit just lowered: the keys and
+    // the prover only ever see `circuit.xbc`.
+    if let Err(e) = xark_ir::function_decode::verify_blob_matches(
+        &lowered.output.xbc,
+        &lowered.output.r1cs,
+        &lowered.output.primitive,
+    ) {
+        eprintln!(
+            "{} internal: circuit.xbc does not match the lowered circuit: {e}",
+            crate::style::err("error:")
+        );
+        return 1;
+    }
+    // The R1CS digest: what the proving/verifying keys depend on, and the same
+    // under every supported rustc (docs/toolchain.md).
+    let digest = format!(
+        "{:032x}",
+        xark_ir::function_decode::stream_digest(&lowered.output.xbc)
+    );
+    if profile {
+        xark_frontend::relativize_profile(&mut lowered.output, crate_abs);
+    }
+    if let Err(e) =
+        xark_frontend::write_outputs_in(out_abs, &lowered.output, emit_json, profile, crate_abs)
+    {
+        eprintln!("xark: writing {}: {e}", out_abs.display());
+        return 1;
+    }
+    if let Err(e) = xark_frontend::write_sources(out_abs, &mut lowered.sources, crate_abs) {
+        eprintln!(
+            "xark: writing {}: {e}",
+            out_abs.join("sources.json").display()
+        );
+        return 1;
+    }
+    let wrote = std::fs::write(out_abs.join("digest"), format!("{digest}\n")).is_ok();
+    let wrote = wrote
+        & std::fs::write(
+            out_abs.join("schema.json"),
+            serde_json::to_string_pretty(&lowered.schema).unwrap_or_default() + "\n",
+        )
+        .is_ok();
+    // The source files the circuit came from, gadgets included: how a plain `cargo
+    // test` notices the circuit is out of date (`xark_prover::circuit`). Written
+    // last: a build is only complete with it (`stale_build`), so one stopped
+    // before here is rebuilt rather than used without its schema.
+    let list: String = built
+        .sources
+        .iter()
+        .map(|p| format!("{}\n", p.display()))
+        .collect();
+    // Only a build whose every output was written is reused.
+    if wrote & std::fs::write(out_abs.join("deps"), list).is_ok() {
+        write_build_key(out_abs, &key);
+    }
+    let p = &lowered.output.primitive;
+    eprintln!(
+        "{} {} vars, {} constraints, {} witness-gen ops",
+        crate::style::tag(),
+        p.vars.len(),
+        lowered.output.r1cs.constraints.len(),
+        p.witness_gen.len(),
+    );
+    if !profile {
+        print_hotspots(
+            crate_abs,
+            &lowered.sources,
+            lowered.output.r1cs.constraints.len(),
+        );
+    }
+    eprintln!("{} circuit digest {digest}", crate::style::tag());
+    eprintln!(
+        "{} wrote {}",
+        crate::style::tag(),
+        crate::style::brand(&out_abs.display().to_string())
+    );
+    0
+}
+
+/// The three source lines that cost the most constraints, so every build shows
+/// where a circuit's size comes from.
+fn print_hotspots(crate_abs: &std::path::Path, sources: &xark_ir::SourceMap, rows: usize) {
+    let costs = sources.line_costs(rows);
+    // Lines under 1% would be noise; with none above it, there's nothing to show.
+    if rows == 0 || !costs.iter().take(3).any(|(_, n)| n * 100 >= rows) {
+        return;
+    }
+    eprintln!("{} most constraints come from", crate::style::tag());
+    // Lines under 1% would be noise.
+    for (site, n) in costs.iter().take(3).filter(|(_, n)| n * 100 >= rows) {
+        let pct = format!("{:.0}%", 100.0 * *n as f64 / rows as f64);
+        let at = format!(
+            "{}:{}",
+            crate::commands::from_here(crate_abs, &site.file),
+            site.line
+        );
+        eprintln!(
+            "      {pct:>4}  {}  {}",
+            crate::style::brand(&at),
+            crate::style::dim(&site.text)
+        );
+    }
+    eprintln!(
+        "      {}",
+        crate::style::dim("`xark profile` breaks down every line")
+    );
+}
+
+/// `xark clean` — remove **every** xark output tree under the current directory:
+/// each circuit crate's `target/xark/` (emitted artifacts, keys, proofs) and
+/// `target/xark-wasm/` (the wasm build cache). Takes no arguments.
+pub fn cmd_clean() -> i32 {
+    fn walk(dir: &std::path::Path, removed: &mut u32, errors: &mut u32) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            // Not through symlinks: they can lead outside the current directory
+            // (or loop).
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let path = entry.path();
+            match path.file_name().and_then(|s| s.to_str()) {
+                // Remove `target/xark{,-wasm,-client}` here; don't descend into `target/`.
+                Some("target") => {
+                    for xark in ["xark", "xark-wasm", "xark-client"].map(|d| path.join(d)) {
+                        if !xark.is_dir() {
+                            continue;
+                        }
+                        match std::fs::remove_dir_all(&xark) {
+                            Ok(()) => {
+                                eprintln!("xark: removed {}", xark.display());
+                                *removed += 1;
+                            }
+                            Err(e) => {
+                                eprintln!("xark: failed to remove {}: {e}", xark.display());
+                                *errors += 1;
+                            }
+                        }
+                    }
+                }
+                Some(".git" | "node_modules") => {} // never holds a circuit build
+                _ => walk(&path, removed, errors),
+            }
+        }
+    }
+    let root = std::env::current_dir().expect("cwd");
+    let (mut removed, mut errors) = (0u32, 0u32);
+    walk(&root, &mut removed, &mut errors);
+    if removed == 0 && errors == 0 {
+        eprintln!(
+            "xark: nothing to clean (no target/xark or target/xark-wasm under {})",
+            root.display()
+        );
+    } else {
+        eprintln!(
+            "xark: cleaned {removed} xark target director{}",
+            if removed == 1 { "y" } else { "ies" }
+        );
+    }
+    (errors > 0) as i32
+}
+
+/// `xark test [crate-dir] [-- <cargo test args>]`
+///
+/// One-shot circuit testing: build the crate (`xark build`) so its
+/// `target/xark/<pkg>/` artifacts exist, then run `cargo test` in the crate so
+/// the in-crate `cargo test` circuit tests can load them. `forwarded` goes to
+/// `cargo test` verbatim, so `xark test . -- --include-ignored` is `cargo test --
+/// --include-ignored`.
+pub fn cmd_test(crate_dir: &str, forwarded: &[String]) -> i32 {
+    // At a project's root: every circuit's tests, then the programs'.
+    if let Some(root) = crate::commands::project::root_at(Some(crate_dir)) {
+        return crate::commands::project::test(&root, forwarded);
+    }
+    let crate_dir = crate_root(crate_dir);
+
+    // Build first so the tests' artifacts are present + current, unless they are.
+    // Build with `profile` (also writes `profile.json`, leaving the other artifacts
+    // byte-identical): the test harness reads it to explain which source line /
+    // function a failing constraint came from.
+    let current = crate::xark_project::XarkProject::resolve(Some(crate_dir.clone().into()))
+        .is_ok_and(|p| stale_build(&p.xark_dir, "profile.json", Some("bn254")).is_none());
+    if !current {
+        let code = build(&crate_dir, None, "bn254", true, false);
+        if code != 0 {
+            eprintln!("xark: build failed; skipping tests");
+            return code;
+        }
+    }
+
+    // Run in `--release`: circuit tests drive a full Groth16 setup+prove+verify,
+    // 10–50× slower in debug (minutes vs seconds on a large hash/EC circuit), so
+    // release is the sensible default. The other arguments go to `cargo test`
+    // as given.
+    eprintln!("xark: running `cargo test --release` in {crate_dir}");
+    let mut cargo = Command::new("cargo");
+    cargo
+        .arg("test")
+        .arg("--release")
+        .args(forwarded)
+        .current_dir(&crate_dir);
+    // In a project the workspace's release profile is the programs' (fat LTO, one
+    // codegen unit): it relinks a circuit's test binary in 8 s where it would take
+    // 1 s (the starter circuit, after an edit). The circuit itself is the same
+    // (its build sets its own profile), so its tests build without them.
+    if crate::xark_project::project_root(std::path::Path::new(&crate_dir)).is_some() {
+        cargo
+            .env("CARGO_PROFILE_RELEASE_LTO", "false")
+            .env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "16");
+    }
+    let status = cargo.status();
+    match status {
+        Ok(s) => s.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("xark: failed to run cargo test: {e}");
+            1
+        }
+    }
+}
+
+/// The circuit crate for a directory argument: `dir` itself, or, as cargo
+/// finds it, the nearest enclosing package of the current directory (`xark
+/// test` from `src/`). A named directory is taken as given, as cargo takes a
+/// manifest path. Unchanged when there's none, for the caller to report.
+fn crate_root(dir: &str) -> String {
+    let p = std::path::Path::new(dir);
+    if dir != "." || p.join("Cargo.toml").is_file() {
+        return dir.to_string();
+    }
+    p.canonicalize()
+        .ok()
+        .and_then(|abs| {
+            abs.ancestors()
+                .skip(1)
+                .find(|a| crate::xark_project::read_pkg_name(a).is_some())
+                .map(|a| a.display().to_string())
+        })
+        .unwrap_or_else(|| dir.to_string())
+}
+
+/// `xark check <crate-dir>`
+///
+/// Fast, artifact-free validation of a circuit crate for editor diagnostics (see
+/// `check_stable`). `json` (`--message-format=json`) emits JSON diagnostics on
+/// stdout, the shape `rust-analyzer`'s `check.overrideCommand` consumes.
+pub fn cmd_check(crate_dir: &str, json: bool) -> i32 {
+    if let Some(root) = crate::commands::project::root_at(Some(crate_dir)) {
+        return crate::commands::project::check(&root, json);
+    }
+    let crate_dir = PathBuf::from(crate_root(crate_dir));
+    let crate_abs = std::env::current_dir().expect("cwd").join(&crate_dir);
+    check_stable(&crate_abs, json)
+}
+
+/// `xark check`: build the circuit for wasm32 (with line
+/// tables, so a rejection points at its source line), then lower it. Cargo's own
+/// diagnostics pass through; a lowering rejection is reported like a rustc error —
+/// with `--message-format=json`, as a cargo `compiler-message` on stdout (what
+/// rust-analyzer's `check.overrideCommand` reads).
+fn check_stable(crate_abs: &std::path::Path, json: bool) -> i32 {
+    // For an editor, xark check *replaces* rust-analyzer's `cargo check`, so it
+    // runs one first: the circuit build below sees only the circuit (wasm32,
+    // `cfg(xark)`), never the tests or other host-only code.
+    let mut skip_rendered = std::collections::HashSet::new();
+    if json {
+        match host_check_json(crate_abs, false) {
+            Some((true, seen)) => skip_rendered = seen,
+            // Errors: reported; the circuit build would only repeat them.
+            Some((false, _)) => return 1,
+            None => {}
+        }
+    }
+    check_circuit(crate_abs, json, skip_rendered)
+}
+
+/// The circuit half of `xark check`: build it for wasm32 and lower it, leaving out
+/// cargo's diagnostics already reported (`skip_rendered`).
+pub fn check_circuit(
+    crate_abs: &std::path::Path,
+    json: bool,
+    skip_rendered: std::collections::HashSet<String>,
+) -> i32 {
+    let opts = xark_frontend::BuildOptions {
+        json_diagnostics: json,
+        skip_rendered,
+        ..Default::default()
+    };
+    let target_dir = crate_abs.join("target/xark-wasm");
+    let wasm = match xark_frontend::build_crate_with(crate_abs, &target_dir, &opts) {
+        Ok(b) => b.wasm,
+        // Cargo already reported why (on stdout as JSON when asked).
+        Err(e) => {
+            if !json {
+                eprintln!("xark: {e}");
+            }
+            return 1;
+        }
+    };
+    // Field-agnostic check: lower over BN254 (rejections don't depend on the field).
+    match xark_frontend::lower_module(&wasm, xark_ir::FieldSpec::named("bn254"), false, false) {
+        Ok(_) => {
+            if !json {
+                eprintln!("{} circuit ok", crate::style::tag());
+            }
+            0
+        }
+        Err(e) => {
+            if json {
+                println!("{}", check_diagnostic_json(crate_abs, &e));
+            } else {
+                eprintln!("{} {e}", crate::style::err("error:"));
+            }
+            1
+        }
+    }
+}
+
+/// `cargo check --all-targets` of the crate (with `workspace`, every member of the
+/// workspace there) on the host, its JSON diagnostics relayed to stdout: `(passed,
+/// the diagnostics' rendered text)`, or `None` if cargo couldn't be run. Its
+/// `build-finished` line is held back unless it failed (the circuit check after it
+/// then reports its own).
+pub fn host_check_json(
+    crate_abs: &std::path::Path,
+    workspace: bool,
+) -> Option<(bool, std::collections::HashSet<String>)> {
+    let out = Command::new("cargo")
+        .args([
+            "check",
+            "--all-targets",
+            "--message-format=json-diagnostic-rendered-ansi",
+        ])
+        .args(workspace.then_some("--workspace"))
+        .current_dir(crate_abs)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .ok()?;
+    let ok = out.status.success();
+    let mut seen = std::collections::HashSet::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let v = serde_json::from_str::<serde_json::Value>(line).ok();
+        let reason = v.as_ref().and_then(|v| v["reason"].as_str());
+        if ok && reason == Some("build-finished") {
+            continue;
+        }
+        if let Some(r) = v.as_ref().and_then(|v| v["message"]["rendered"].as_str()) {
+            seen.insert(r.to_string());
+        }
+        println!("{line}");
+    }
+    Some((ok, seen))
+}
+
+/// A frontend rejection as a cargo `compiler-message` (rustc's JSON diagnostic
+/// shape), with the primary span at the error's source line when known.
+fn check_diagnostic_json(crate_abs: &std::path::Path, e: &xark_frontend::CompileError) -> String {
+    let package_id = std::fs::read_to_string(crate_abs.join("Cargo.toml"))
+        .ok()
+        .and_then(|m| {
+            m.lines()
+                .skip_while(|l| l.trim() != "[package]")
+                .find_map(|l| {
+                    let v = l
+                        .trim()
+                        .strip_prefix("name")?
+                        .trim_start()
+                        .strip_prefix('=')?;
+                    Some(v.trim().trim_matches('"').to_string())
+                })
+        })
+        .unwrap_or_default();
+    let spans: Vec<serde_json::Value> = e
+        .site
+        .iter()
+        .filter_map(|s| s.span.as_ref())
+        .map(|(file, line, col)| {
+            let col = (*col).max(1);
+            serde_json::json!({
+                "file_name": file,
+                "byte_start": 0,
+                "byte_end": 0,
+                "line_start": line,
+                "line_end": line,
+                "column_start": col,
+                "column_end": col + 1,
+                "is_primary": true,
+                "text": [],
+                "label": null,
+                "suggested_replacement": null,
+                "suggestion_applicability": null,
+                "expansion": null,
+            })
+        })
+        .collect();
+    let children: Vec<serde_json::Value> = e
+        .notes
+        .iter()
+        .map(|n| ("note", n))
+        .chain(e.help.iter().map(|h| ("help", h)))
+        .map(|(level, m)| {
+            serde_json::json!({
+                "message": m, "code": null, "level": level, "spans": [],
+                "children": [], "rendered": null,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "reason": "compiler-message",
+        "package_id": package_id,
+        "manifest_path": crate_abs.join("Cargo.toml").display().to_string(),
+        "target": { "name": package_id, "kind": ["lib"], "src_path": crate_abs.join("src/lib.rs").display().to_string() },
+        "message": {
+            "message": e.message,
+            "code": { "code": "xark", "explanation": null },
+            "level": "error",
+            "spans": spans,
+            "children": children,
+            "rendered": format!("error: {e}\n"),
+        },
+    })
+    .to_string()
+}
+
+/// `xark init [name]` — start a project in `name/` (or the current directory): a
+/// `xark.toml`, a Cargo workspace, and a starter circuit crate in
+/// `circuits/<name>/`, pre-wired for rust-analyzer so unsupported constructs surface
+/// inline as you type (via `xark check`). `xark add` grows it.
+pub fn cmd_init(name_arg: Option<&str>, circuit_arg: Option<&str>) -> i32 {
+    let cwd = std::env::current_dir().expect("cwd");
+    // The argument may be a path (`xark init apps/demo`): the project and its first
+    // circuit are named after its last component.
+    let dir = name_arg.map_or_else(|| cwd.clone(), |n| cwd.join(n));
+    let name = circuit_arg.map(str::to_string).unwrap_or_else(|| {
+        dir.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("circuit")
+            .to_string()
+    });
+    if let Err(why) = check_crate_name(&name) {
+        let suggest = suggest_crate_name(&name);
+        let how = if circuit_arg.is_some() {
+            format!("pick another circuit name, e.g. `--circuit {suggest}`")
+        } else {
+            format!(
+                "pick another directory name, e.g. `xark init {suggest}` (or name the circuit \
+                 with `--circuit`)"
+            )
+        };
+        eprintln!("error: can't name a crate `{name}`: {why}\n  {how}");
+        return 2;
+    }
+    if let Err(e) = crate::commands::add::init_project(&dir, &name) {
+        eprintln!("{} {e:#}", crate::style::err("error:"));
+        return 1;
+    }
+    let mut steps = Vec::new();
+    if let Some(n) = name_arg {
+        steps.push((
+            format!("cd {n}"),
+            "the project's root: the commands below run there",
+        ));
+    }
+    steps.push((
+        "xark test".to_string(),
+        "build the circuit and run its tests",
+    ));
+    steps.push((
+        format!("xark add program {name}"),
+        "a Solana program that verifies its proofs, with a LiteSVM test",
+    ));
+    eprintln!("{}", crate::style::next_steps(&steps));
+    0
+}
+
+/// Write the starter circuit crate in `dir`, named after it, keeping any file
+/// already there; its name, or the exit code. A circuit in a project (`xark add
+/// circuit`) leaves the editor settings and `.gitignore` to the project's root.
+pub fn scaffold_circuit(dir: &std::path::Path, in_project: bool) -> Result<String, i32> {
+    let name = dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("circuit")
+        .to_string();
+    if let Err(why) = check_crate_name(&name) {
+        eprintln!(
+            "error: can't name a crate `{name}`: {why}\n  \
+             pick another directory name, e.g. `xark init {}`",
+            suggest_crate_name(&name)
+        );
+        return Err(2);
+    }
+
+    // Pin the published `xark` dep to this CLI's own major.minor
+    // (the whole workspace releases together), so the scaffold never suggests a
+    // version older than the CLI you ran it with.
+    // `0.3.1` and `0.3.0-rc.1` both pin `0.3`.
+    let ver = xark_ir::major_minor(env!("CARGO_PKG_VERSION"));
+    let cargo_toml = format!(
+        "[package]\n\
+         name = \"{name}\"\n\
+         version = \"0.1.0\"\n\
+         edition = \"2024\"\n\n\
+         [lib]\n\
+         crate-type = [\"lib\"]\n\n\
+         [dependencies]\n\
+         xark = {{ version = \"{ver}\" }}\n\
+         # From git:               xark = {{ git = \"https://github.com/blueshift-gg/xark\" }}\n\
+         # From a local checkout:  xark = {{ path = \"../xark/crates/lang\" }}\n\n\
+         # `xark` is set only by the circuit build; declare it so rustc's `unexpected_cfgs`\n\
+         # lint (1.80+) stays quiet.\n\
+         [lints.rust]\n\
+         unexpected_cfgs = {{ level = \"warn\", check-cfg = ['cfg(xark)'] }}\n"
+    );
+    let fn_ident = ident_of(&name);
+    let lib_rs = format!(
+        "{}{}",
+        LIB_TEMPLATE.replace("__FN__", &fn_ident),
+        tests_template(&fn_ident)
+    );
+    // Both files set the same rust-analyzer override: `rust-analyzer.toml` is the
+    // editor-agnostic form; `.vscode/settings.json` covers VS Code specifically.
+    let ra_cmd = "[\"xark\", \"check\", \".\", \"--message-format=json\"]";
+    let files: [(&str, String); 5] = [
+        ("Cargo.toml", cargo_toml),
+        ("src/lib.rs", lib_rs),
+        (
+            "rust-analyzer.toml",
+            format!(
+                "# Run xark's subset validator on save so unsupported constructs show inline.\n\
+                 # Needs `xark` on PATH. Replaces rust-analyzer's `cargo check`, which\n\
+                 # `xark check` runs too.\n\
+                 [check]\n\
+                 overrideCommand = {ra_cmd}\n"
+            ),
+        ),
+        (
+            ".vscode/settings.json",
+            format!("{{\n  \"rust-analyzer.check.overrideCommand\": {ra_cmd}\n}}\n"),
+        ),
+        (".gitignore", "/target\n".to_string()),
+    ];
+
+    let mut created = 0u32;
+    let standalone_only = ["rust-analyzer.toml", ".vscode/settings.json", ".gitignore"];
+    for (rel, contents) in &files {
+        if in_project && standalone_only.contains(rel) {
+            continue;
+        }
+        let path = dir.join(rel);
+        if path.exists() {
+            eprintln!("xark: keeping existing {rel}");
+            continue;
+        }
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            eprintln!("xark: failed to create {}: {e}", parent.display());
+            return Err(1);
+        }
+        if let Err(e) = std::fs::write(&path, contents) {
+            eprintln!("xark: failed to write {rel}: {e}");
+            return Err(1);
+        }
+        created += 1;
+    }
+
+    eprintln!(
+        "xark: scaffolded circuit `{name}` ({created} files) in {}",
+        dir.display()
+    );
+    Ok(name)
+}
+
+/// Refuse names `cargo new` refuses: the crate (and its `#[circuit]` fn, named
+/// after it) must be a valid, non-keyword Rust identifier once `-` becomes `_`.
+pub(crate) fn check_crate_name(name: &str) -> Result<(), &'static str> {
+    const KEYWORDS: &[&str] = &[
+        "_", "Self", "abstract", "as", "async", "await", "become", "box", "break", "const",
+        "continue", "crate", "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for",
+        "gen", "if", "impl", "in", "let", "loop", "macro", "match", "mod", "move", "mut",
+        "override", "priv", "pub", "ref", "return", "self", "static", "struct", "super", "trait",
+        "true", "try", "type", "typeof", "unsafe", "unsized", "use", "virtual", "where", "while",
+        "yield",
+    ];
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("only letters, digits, `-` and `_` are allowed");
+    }
+    if name.starts_with(|c: char| c.is_ascii_digit()) {
+        return Err("it starts with a digit");
+    }
+    if KEYWORDS.contains(&name.replace('-', "_").as_str()) {
+        return Err("it is a Rust keyword");
+    }
+    Ok(())
+}
+
+/// A valid name close to a refused one: `type` → `type_circuit`,
+/// `1st` → `circuit_1st`, `a b` → `a_b`.
+fn suggest_crate_name(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if s.trim_matches('_').is_empty() {
+        "circuit".to_string()
+    } else if s.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("circuit_{s}")
+    } else if check_crate_name(&s).is_err() {
+        format!("{s}_circuit")
+    } else {
+        s
+    }
+}
+
+/// Turn a crate name into a valid Rust identifier for the scaffolded entry fn
+/// (`my-circuit` → `my_circuit`); falls back to `circuit`.
+fn ident_of(name: &str) -> String {
+    let mut s: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    if s.is_empty() {
+        return "circuit".to_string();
+    }
+    if s.starts_with(|c: char| c.is_ascii_digit()) {
+        s.insert(0, '_');
+    }
+    s
+}
+
+/// The starter circuit written by `xark init`. The `#[cfg(test)] mod tests`
+/// block ([`tests_template`]) is appended with the crate's own name filled in.
+/// Plain `std` Rust: the circuit build links `std` as the host build does.
+const LIB_TEMPLATE: &str = "\
+use xark::prelude::*;
+
+#[circuit]
+pub fn __FN__(secret: Private<Field>, result: Public<Field>) {
+    // prove knowledge of a square root: secret * secret == result
+    require_eq(secret * secret, result);
+}
+";
+
+/// The `#[cfg(test)] mod tests` appended to the scaffolded `src/lib.rs`.
+///
+/// They call the validator `#[circuit]` generates under the entry's name: the same
+/// parameters, each taking anything that converts (`2` for a `Field`). These tests
+/// load the built artifacts; `cargo test` builds them when needed.
+fn tests_template(name: &str) -> String {
+    format!(
+        "\n\
+         #[cfg(test)]\n\
+         mod tests {{\n\
+         \x20   use super::*;\n\
+         \n\
+         \x20   #[test]\n\
+         \x20   fn accepts_valid() {{\n\
+         \x20       {name}(2, 4).unwrap(); // 2 * 2 == 4\n\
+         \x20   }}\n\
+         \n\
+         \x20   #[test]\n\
+         \x20   fn rejects_invalid() {{\n\
+         \x20       assert!({name}(3, 4).is_err()); // 3 * 3 != 4\n\
+         \x20   }}\n\
+         }}\n"
+    )
+}

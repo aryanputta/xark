@@ -1,0 +1,676 @@
+//! R1CS minimization by linear-variable elimination.
+//!
+//! Linearly-defined internal variables (a plug `p = <lc>`, a copy `w = v`, or a
+//! mul output pinned by an equality) are each uniquely determined by one linear
+//! constraint and substituted away — Gaussian elimination over the prime field.
+//! The eliminated variable is a *function* of the survivors, so every solution of
+//! the reduced system extends uniquely to the original and back: satisfiability is
+//! preserved exactly in both directions — elimination can neither forge a witness
+//! (soundness) nor reject an honest one (completeness). Run to a fixpoint with a
+//! trivial-constraint drop, this is minimal ("optimal") R1CS for Groth16.
+//!
+//! Only `Internal` variables are eliminated; `Public`/`Private` inputs keep their
+//! ids, so the caller's witness/public-input order stays a valid superset.
+
+use crate::field::FieldConst;
+use crate::linear_combination::{LinearCombination, Term, VarId};
+use crate::r1cs::{R1csConstraint, R1csProgram, Visibility};
+use crate::solver::Fp;
+#[cfg(test)]
+use num_bigint::BigInt;
+use num_bigint::BigUint;
+use rayon::prelude::*;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Fill-in guard: only eliminate a variable whose replacement LC has at most this
+/// many terms.
+///
+/// Set low (2) because Groth16 cost tracks total *nonzero terms*, not constraint
+/// count (the FFT domain is power-of-two-quantized). A higher cap does more
+/// eliminations but splices each dense replacement LC into every referencing
+/// constraint, inflating nonzeros — e.g. fill=32 blows secp256k1 6.6M→47M nonzeros
+/// (+615%) for a 0.9% constraint drop that doesn't cross an FFT boundary. fill=2
+/// still captures the cheap, strictly-shrinking eliminations (plugs, copies,
+/// dead-var pruning, mul→eq merges). Fixed, not tunable: setup keys these rows,
+/// and `tests/stable-digests.txt` pins them as a function of the circuit alone.
+pub const MAX_FILL: usize = 2;
+
+/// A linear combination in reduced form: constant `k` plus `var → coeff`, no zero
+/// coefficients. Coefficients are the solver's Montgomery [`Fp`] (native BN254, no
+/// `num-bigint` alloc per op).
+///
+/// The term map is a `BTreeMap`, not a sorted `Vec`: the hot op is a sparse AXPY
+/// (`row += m·vlc`) where `row` is often dense (~10⁵ terms) but `vlc` small, so the
+/// `BTreeMap` touches only `|vlc|` entries (`O(|vlc|·log|row|)`) where a `Vec` merge
+/// would rewrite the whole row — 4.7× slower on GLV. Ascending-by-var iteration is
+/// used by both the R1CS output order and the "lowest-id internal pivot" rule.
+#[derive(Clone)]
+struct Lc {
+    k: Fp,
+    t: BTreeMap<VarId, Fp>,
+}
+
+/// `FieldConst → Fp` without a decimal string round-trip: small ints (the vast
+/// majority) go through `i64`, rare big constants via `BigInt` bytes. The string
+/// path was ~half of `minimize`'s wall-clock over a ~million-constraint program.
+fn fc_to_fp(fc: &FieldConst, m: &BigUint) -> Fp {
+    Fp::from_const(fc, m)
+}
+
+impl Lc {
+    fn from_ir(lc: &LinearCombination, m: &BigUint) -> Lc {
+        let mut t = BTreeMap::new();
+        for term in &lc.terms {
+            let c = fc_to_fp(&term.coeff, m);
+            if !c.is_zero() {
+                // A repeated var (shouldn't occur post-`simplified`) accumulates.
+                let e = t.entry(term.var).or_insert_with(|| Fp::zero(m));
+                *e = e.add(&c);
+                if e.is_zero() {
+                    t.remove(&term.var);
+                }
+            }
+        }
+        Lc {
+            k: fc_to_fp(&lc.constant, m),
+            t,
+        }
+    }
+
+    fn is_const(&self) -> bool {
+        self.t.is_empty()
+    }
+
+    fn scale(&self, mul: &Fp) -> Lc {
+        let mut t = BTreeMap::new();
+        for (v, c) in &self.t {
+            let nc = c.mul(mul);
+            if !nc.is_zero() {
+                t.insert(*v, nc);
+            }
+        }
+        Lc {
+            k: self.k.mul(mul),
+            t,
+        }
+    }
+
+    /// `self - other`.
+    fn sub(&self, other: &Lc, m: &BigUint) -> Lc {
+        let mut t = self.t.clone();
+        for (v, c) in &other.t {
+            let e = t.entry(*v).or_insert_with(|| Fp::zero(m));
+            *e = e.sub(c);
+            if e.is_zero() {
+                t.remove(v);
+            }
+        }
+        Lc {
+            k: self.k.sub(&other.k),
+            t,
+        }
+    }
+
+    fn to_ir(&self) -> LinearCombination {
+        // `self.t` is a `BTreeMap`, so `terms` is already ascending by var — the
+        // R1CS wants that order, and skipping a re-sort matters on dense LCs.
+        let terms: Vec<Term> = self
+            .t
+            .iter()
+            .map(|(v, c)| Term {
+                coeff: FieldConst::from_bigint(c.to_biguint().into()),
+                var: *v,
+            })
+            .collect();
+        LinearCombination {
+            constant: FieldConst::from_bigint(self.k.to_biguint().into()),
+            terms,
+        }
+    }
+}
+
+/// Substitute `v → vlc` into one constraint in place: `k += m·vlc.k` and
+/// `lc += m·vlc` for `m = lc[v]`, over each of `a,b,c`. Returns `None` if `v` was
+/// absent, else `Some((new, ms))` where `new` is the vars *first introduced* here — the
+/// `occ` entries the caller must add (already-present vars keep their entry, since
+/// `occ` is append-only) — and `ms` the multiplier `m` per form, for the [`Trace`].
+/// Doesn't touch `occ`, so parallel sites stay independent.
+fn subst_site(cj: &mut [Lc; 3], v: VarId, vlc: &Lc) -> Option<(Vec<VarId>, [Option<Fp>; 3])> {
+    use std::collections::btree_map::Entry;
+    let mut changed = false;
+    let mut new_vars: Vec<VarId> = Vec::new();
+    let mut ms = [None, None, None];
+    for (lc, mult) in cj.iter_mut().zip(&mut ms) {
+        let Some(m) = lc.t.remove(&v) else { continue };
+        changed = true;
+        *mult = Some(m.clone());
+        lc.k = lc.k.add(&m.mul(&vlc.k));
+        for (var, co) in &vlc.t {
+            match lc.t.entry(*var) {
+                Entry::Occupied(mut e) => {
+                    let nv = e.get().add(&m.mul(co));
+                    if nv.is_zero() {
+                        e.remove();
+                    } else {
+                        *e.get_mut() = nv;
+                    }
+                }
+                Entry::Vacant(e) => {
+                    // `m` and `co` are both nonzero ⇒ their product is nonzero in a
+                    // prime field, so this is a genuine new term.
+                    e.insert(m.mul(co));
+                    new_vars.push(*var);
+                }
+            }
+        }
+    }
+    changed.then_some((new_vars, ms))
+}
+
+/// A raw pointer into the constraint vector, tagged `Send`/`Sync` so distinct
+/// indices can be mutated from a `rayon` fan-out.
+// SAFETY: the caller dispatches only over a deduped site list, so every worker
+// touches a unique index — no two `&mut Option<[Lc; 3]>` alias — and the vector is
+// not resized during the parallel section.
+#[derive(Clone, Copy)]
+struct ConsPtr(*mut Option<[Lc; 3]>);
+unsafe impl Send for ConsPtr {}
+unsafe impl Sync for ConsPtr {}
+
+/// Eliminations touching at least this many sites fan out across threads; smaller
+/// ones stay serial (fan-out overhead would dominate).
+const PAR_SUBST_THRESHOLD: usize = 64;
+
+/// The linear relation `a·b = c` imposes when not genuinely quadratic — i.e. when
+/// `a` or `b` is a bare constant. Returns `α·b − c` (or `β·a − c`), an `Lc` the
+/// circuit forces to zero; `None` if both sides carry variables.
+fn relation(a: &Lc, b: &Lc, c: &Lc, m: &BigUint) -> Option<Lc> {
+    if a.is_const() {
+        Some(b.scale(&a.k).sub(c, m))
+    } else if b.is_const() {
+        Some(a.scale(&b.k).sub(c, m))
+    } else {
+        None
+    }
+}
+
+/// Minimize a program by eliminating every linearly-defined `Internal` variable
+/// to a fixpoint. Returns a new program with the same field, the surviving
+/// variables (original ids preserved), and rewritten constraints. If the field
+/// modulus is unknown, the program is returned unchanged (elimination needs the
+/// modulus for the coefficient inverse).
+pub fn minimize(prog: &R1csProgram) -> R1csProgram {
+    minimize_with_fill(prog, MAX_FILL)
+}
+
+/// As [`minimize`], but with an explicit fill-in threshold. `usize::MAX` disables
+/// the guard — safe and reduction-complete on an already per-template-reduced R1CS
+/// (dense eliminations were bounded within template bodies, so the flattened
+/// boundary pass no longer cascades), but catastrophic on a raw circuit.
+pub fn minimize_with_fill(prog: &R1csProgram, fill: usize) -> R1csProgram {
+    run(prog, fill, None)
+}
+
+/// The certificate of one minimization, which the Lean checker `lake exe minimize_check`
+/// (`formal/Formal/Minimize/Check.lean`) accepts or refuses: step `k` eliminated
+/// `steps[k].var := steps[k].lc` using the original row `steps[k].row`, and each
+/// substitution into an original row added `m · (lc − var)` to one of its forms.
+#[derive(Default)]
+pub struct Trace {
+    /// The eliminations, in order.
+    pub steps: Vec<TraceStep>,
+    /// Original rows dropped as identically true.
+    pub dropped: Vec<usize>,
+    /// `(original row, form 0/1/2 for a/b/c, step, m)`, in the order made.
+    pub substitutions: Vec<(usize, u8, u32, FieldConst)>,
+}
+
+/// One elimination: `var := lc`, defined by the original row `row`.
+pub struct TraceStep {
+    pub var: VarId,
+    pub row: usize,
+    pub lc: LinearCombination,
+}
+
+/// As [`minimize_with_fill`], also returning the run's [`Trace`]. The rows are the same.
+pub fn minimize_traced(prog: &R1csProgram, fill: usize) -> (R1csProgram, Trace) {
+    let mut trace = Trace::default();
+    let out = run(prog, fill, Some(&mut trace));
+    (out, trace)
+}
+
+fn run(prog: &R1csProgram, fill: usize, mut trace: Option<&mut Trace>) -> R1csProgram {
+    let Some(mod_dec) = &prog.field.modulus_decimal else {
+        return prog.clone();
+    };
+    let Ok(modulus) = mod_dec.parse::<BigUint>() else {
+        return prog.clone();
+    };
+    let fc = |x: &Fp| FieldConst::from_bigint(x.to_biguint().into());
+
+    // Size the var-indexed arrays to cover every id that appears — declared *or*
+    // referenced. A malformed program can reference a dangling id before the
+    // caller's `validate()` rejects it; sizing to it avoids OOB indexing here, and
+    // a dangling id (not `is_internal`) survives as a pseudo-input for validation.
+    let max_referenced = prog
+        .constraints
+        .par_iter()
+        .map(|c| {
+            c.a.terms
+                .iter()
+                .chain(&c.b.terms)
+                .chain(&c.c.terms)
+                .map(|t| t.var as usize + 1)
+                .max()
+                .unwrap_or(0)
+        })
+        .max()
+        .unwrap_or(0);
+    let n_vars = prog
+        .variables
+        .iter()
+        .map(|v| v.id as usize + 1)
+        .max()
+        .unwrap_or(0)
+        .max(max_referenced);
+    // Only `Internal` variables are eliminable; flat bitmap for O(1) hot-loop tests.
+    let mut is_internal = vec![false; n_vars];
+    for v in &prog.variables {
+        if v.visibility == Visibility::Internal {
+            is_internal[v.id as usize] = true;
+        }
+    }
+
+    // Parse constraints; `None` marks a dead (eliminated/trivial) constraint.
+    // `from_ir` is independent per constraint, so build in parallel.
+    let mut cons: Vec<Option<[Lc; 3]>> = prog
+        .constraints
+        .par_iter()
+        .map(|c| {
+            Some([
+                Lc::from_ir(&c.a, &modulus),
+                Lc::from_ir(&c.b, &modulus),
+                Lc::from_ir(&c.c, &modulus),
+            ])
+        })
+        .collect();
+
+    // Occurrence index: var → constraint indices that reference it. Flat and
+    // **append-only with stale tolerance**: dead/dropped entries are never removed;
+    // when a var is eliminated its site list is deduped and each site re-checked
+    // (`cons[j]` alive? `lc.t` still holds the var?), so stale entries are cheap
+    // no-ops. Avoids an O(log) map lookup + set insert on the hot per-fill path.
+    let mut occ: Vec<Vec<usize>> = vec![Vec::new(); n_vars];
+    for (i, c) in cons.iter().enumerate() {
+        if let Some(c) = c {
+            // Push keys directly (a var shared across `a,b,c` lists `i` twice —
+            // harmless, deduped on consumption); avoids a per-constraint `BTreeSet`.
+            for lc in c {
+                for v in lc.t.keys() {
+                    occ[*v as usize].push(i);
+                }
+            }
+        }
+    }
+
+    let mut queue: VecDeque<usize> = (0..cons.len()).collect();
+    let mut in_queue = vec![true; cons.len()];
+    let mut eliminated: BTreeSet<VarId> = BTreeSet::new();
+
+    while let Some(i) = queue.pop_front() {
+        in_queue[i] = false;
+        let Some(c) = &cons[i] else { continue };
+        let Some(rel) = relation(&c[0], &c[1], &c[2], &modulus) else {
+            continue;
+        };
+
+        // Trivial `0 = 0` (or `0 = k`, no vars): drop it. A `0 = nonzero`
+        // (infeasible) constraint is kept so the backend still rejects it.
+        if rel.t.is_empty() {
+            if rel.k.is_zero() {
+                cons[i] = None;
+                if let Some(t) = trace.as_deref_mut() {
+                    t.dropped.push(i);
+                }
+            }
+            continue;
+        }
+
+        // Pick the lowest-id Internal var to eliminate (`rel.t` is ascending; any
+        // nonzero coeff is invertible in the prime field). The fixpoint is
+        // confluent, so elimination order doesn't change the result.
+        let Some((&v, coeff)) = rel.t.iter().find(|(var, _)| is_internal[**var as usize]) else {
+            continue;
+        };
+
+        // v = -(rel without v) / coeff.
+        let mut rest = rel.clone();
+        rest.t.remove(&v);
+        let factor = coeff
+            .inverse()
+            .expect("nonzero field coeff is invertible")
+            .neg();
+        let vlc = rest.scale(&factor);
+
+        // Fill-in guard: skip a var whose replacement LC is dense — splicing it into
+        // every referencing constraint cascades into a superlinear blowup. Keeping
+        // `v` with its defining constraint is still sound, just fewer eliminations.
+        if vlc.t.len() > fill {
+            continue;
+        }
+
+        // Retire the defining constraint.
+        cons[i] = None;
+        eliminated.insert(v);
+        let step = trace.as_deref_mut().map(|t| {
+            t.steps.push(TraceStep {
+                var: v,
+                row: i,
+                lc: vlc.to_ir(),
+            });
+            t.steps.len() as u32 - 1
+        });
+
+        // Substitute v → vlc everywhere it appears. Dedup `sites`: the append-only
+        // index can list a constraint more than once (a repeat is a harmless miss).
+        let mut sites = std::mem::take(&mut occ[v as usize]);
+        sites.sort_unstable();
+        sites.dedup();
+        // Fan out for dense (many-site) eliminations — sites are distinct indices,
+        // so each update is independent. `changed` collects sites that held `v`;
+        // `occ` and the worklist are updated serially afterwards.
+        let changed: Vec<_> = if sites.len() >= PAR_SUBST_THRESHOLD {
+            let ptr = ConsPtr(cons.as_mut_ptr());
+            sites
+                .par_iter()
+                .filter_map(|&j| {
+                    // Capture the whole `ConsPtr` (Send+Sync), not the bare field —
+                    // else edition-2021 disjoint capture grabs the raw pointer.
+                    let p = ptr;
+                    // SAFETY: `sites` is deduped, so `j` is unique to this worker;
+                    // no other thread holds `&mut cons[j]`, and `cons` is not
+                    // resized here. `p` outlives the fan-out (borrows `cons`).
+                    let slot = unsafe { &mut *p.0.add(j) };
+                    let cj = slot.as_mut()?;
+                    subst_site(cj, v, &vlc).map(|new| (j, new))
+                })
+                .collect()
+        } else {
+            sites
+                .iter()
+                .filter_map(|&j| {
+                    let cj = cons[j].as_mut()?;
+                    subst_site(cj, v, &vlc).map(|new| (j, new))
+                })
+                .collect()
+        };
+        for (j, (new_vars, ms)) in &changed {
+            if let (Some(t), Some(step)) = (trace.as_deref_mut(), step) {
+                for (form, m) in ms.iter().enumerate() {
+                    if let Some(m) = m {
+                        t.substitutions.push((*j, form as u8, step, fc(m)));
+                    }
+                }
+            }
+            // Record only the vars newly introduced into `j` (see `subst_site`).
+            for var in new_vars {
+                occ[*var as usize].push(*j);
+            }
+            if !in_queue[*j] {
+                in_queue[*j] = true;
+                queue.push_back(*j);
+            }
+        }
+    }
+
+    // Fixpoint invariant (`XARK_VERIFY`): no surviving constraint may still linearly
+    // define an eliminable (`Internal`) variable, else the loop missed an
+    // elimination and the output isn't optimal. Makes optimality a checked property.
+    if crate::dbg_flag("XARK_VERIFY") {
+        for c in cons.iter().flatten() {
+            if let Some(rel) = relation(&c[0], &c[1], &c[2], &modulus)
+                && let Some((&v, coeff)) = rel.t.iter().find(|(var, _)| is_internal[**var as usize])
+            {
+                // Fixpoint is relative to the fill-in guard: a survivor is a
+                // missed elimination only if its replacement LC is within budget.
+                let mut rest = rel.clone();
+                rest.t.remove(&v);
+                let factor = coeff
+                    .inverse()
+                    .expect("nonzero field coeff is invertible")
+                    .neg();
+                let vlc = rest.scale(&factor);
+                if vlc.t.len() <= fill {
+                    panic!(
+                        "XARK_VERIFY: minimizer not at fixpoint — a cheap-to-eliminate \
+                             Internal variable survives"
+                    );
+                }
+            }
+        }
+    }
+
+    // Surviving vars: every input, plus any Internal still referenced. Flat atomic
+    // bitmap swept in parallel — concurrent `true` stores are idempotent and
+    // `Relaxed` suffices since flags are only read after the join.
+    let referenced: Vec<AtomicBool> = (0..n_vars).map(|_| AtomicBool::new(false)).collect();
+    cons.par_iter().filter_map(|c| c.as_ref()).for_each(|c| {
+        for lc in c {
+            for v in lc.t.keys() {
+                referenced[*v as usize].store(true, Ordering::Relaxed);
+            }
+        }
+    });
+    let variables = prog
+        .variables
+        .iter()
+        .filter(|v| !eliminated.contains(&v.id))
+        .filter(|v| {
+            v.visibility != Visibility::Internal
+                || referenced[v.id as usize].load(Ordering::Relaxed)
+        })
+        .cloned()
+        .collect();
+
+    // Rebuild surviving constraints. Collect first (fixes the id order = flattened
+    // position), then serialize each `Lc` back to IR in parallel.
+    let survivors: Vec<&[Lc; 3]> = cons.iter().flatten().collect();
+    let constraints = survivors
+        .par_iter()
+        .enumerate()
+        .map(|(id, c)| R1csConstraint {
+            id: id as u32,
+            a: c[0].to_ir(),
+            b: c[1].to_ir(),
+            c: c[2].to_ir(),
+            debug: None,
+        })
+        .collect();
+
+    R1csProgram {
+        field: prog.field.clone(),
+        variables,
+        constraints,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::linear_combination::LinearCombination;
+    use crate::r1cs::{FieldSpec, R1csConstraint, Variable};
+    use std::collections::BTreeMap;
+
+    fn var(id: u32, vis: Visibility) -> Variable {
+        Variable {
+            id,
+            name: format!("v{id}"),
+            visibility: vis,
+        }
+    }
+
+    /// Reduce into `[0, m)` — a self-contained reference reducer for the tests'
+    /// independent BigInt satisfiability check (production code uses `Fp`).
+    fn rm(x: BigInt, r: &BigInt) -> BigInt {
+        let v = x % r;
+        if v < BigInt::ZERO { v + r } else { v }
+    }
+
+    /// Evaluate a linear combination at `assign`, reduced mod `m` into `[0, m)`.
+    fn eval_lc(lc: &LinearCombination, assign: &BTreeMap<VarId, BigInt>, m: &BigInt) -> BigInt {
+        let mut acc = lc.constant.big();
+        for t in &lc.terms {
+            let x = assign
+                .get(&t.var)
+                .cloned()
+                .unwrap_or_else(|| BigInt::from(0));
+            acc += t.coeff.big() * x;
+        }
+        rm(acc, m)
+    }
+
+    /// Does `assign` satisfy every `a*b = c` constraint of `prog` over its field?
+    fn satisfies(prog: &R1csProgram, assign: &BTreeMap<VarId, BigInt>) -> bool {
+        let m: BigInt = prog
+            .field
+            .modulus_decimal
+            .as_ref()
+            .unwrap()
+            .parse()
+            .unwrap();
+        prog.constraints.iter().all(|con| {
+            let a = eval_lc(&con.a, assign, &m);
+            let b = eval_lc(&con.b, assign, &m);
+            let c = eval_lc(&con.c, assign, &m);
+            rm(a * b - c, &m) == BigInt::from(0)
+        })
+    }
+
+    /// The soundness guarantee: a satisfying witness of the original R1CS still
+    /// satisfies the minimized one (elimination is a Gaussian substitution, so the
+    /// solution set is preserved for the surviving variables).
+    #[test]
+    fn minimize_preserves_satisfying_witness() {
+        use Visibility::{Internal, Public};
+        // v0*v1 = v2 ;  v3 = v2 + v0  (linear, internal → eliminable) ;  v3*v1 = v4
+        let prog = R1csProgram {
+            field: FieldSpec::bn254(),
+            variables: vec![
+                var(0, Public),
+                var(1, Public),
+                var(2, Internal),
+                var(3, Internal),
+                var(4, Public),
+            ],
+            constraints: vec![
+                R1csConstraint::mul(
+                    0,
+                    LinearCombination::var(0),
+                    LinearCombination::var(1),
+                    2,
+                    "v0*v1=v2",
+                ),
+                R1csConstraint::general(
+                    1,
+                    LinearCombination::var(2) + LinearCombination::var(0),
+                    LinearCombination::one(),
+                    LinearCombination::var(3),
+                    "v3=v2+v0",
+                ),
+                R1csConstraint::mul(
+                    2,
+                    LinearCombination::var(3),
+                    LinearCombination::var(1),
+                    4,
+                    "v3*v1=v4",
+                ),
+            ],
+        };
+        // A satisfying witness: v0=3, v1=5 ⇒ v2=15, v3=18, v4=90.
+        let assign: BTreeMap<VarId, BigInt> = [(0, 3), (1, 5), (2, 15), (3, 18), (4, 90)]
+            .into_iter()
+            .map(|(k, v)| (k, BigInt::from(v)))
+            .collect();
+        assert!(
+            satisfies(&prog, &assign),
+            "sanity: witness satisfies original"
+        );
+
+        let reduced = minimize(&prog);
+
+        // An internal var (v3, or equivalently v2) is linearly defined, so the
+        // minimizer eliminates one and retires its constraint. Which one is an
+        // implementation detail; that *some* reduction happens is not.
+        assert!(
+            reduced.variables.len() < prog.variables.len(),
+            "an internal var should be eliminated"
+        );
+        assert!(
+            reduced.constraints.len() < prog.constraints.len(),
+            "a constraint should be retired"
+        );
+        // The SAME witness still satisfies the reduced system — soundness.
+        assert!(
+            satisfies(&reduced, &assign),
+            "the satisfying witness must still satisfy the minimized R1CS"
+        );
+    }
+
+    /// The fill-in guard keeps a variable whose substitution LC exceeds the cap,
+    /// but must never change satisfiability.
+    #[test]
+    fn fill_in_guard_never_breaks_satisfiability() {
+        use Visibility::{Internal, Public};
+        // A linearly-defined internal var whose definition has 3 terms; with a
+        // fill cap of 1 it is *kept*, with a large cap it is eliminated. Either
+        // way the witness must satisfy the result.
+        let prog = R1csProgram {
+            field: FieldSpec::bn254(),
+            variables: vec![
+                var(0, Public),
+                var(1, Public),
+                var(2, Public),
+                var(3, Internal),
+                var(4, Public),
+            ],
+            constraints: vec![
+                R1csConstraint::general(
+                    0,
+                    LinearCombination::var(0)
+                        + LinearCombination::var(1)
+                        + LinearCombination::var(2),
+                    LinearCombination::one(),
+                    LinearCombination::var(3),
+                    "v3=v0+v1+v2",
+                ),
+                R1csConstraint::mul(
+                    1,
+                    LinearCombination::var(3),
+                    LinearCombination::var(0),
+                    4,
+                    "v3*v0=v4",
+                ),
+            ],
+        };
+        let assign: BTreeMap<VarId, BigInt> = [(0, 2), (1, 3), (2, 4), (3, 9), (4, 18)]
+            .into_iter()
+            .map(|(k, v)| (k, BigInt::from(v)))
+            .collect();
+        assert!(satisfies(&prog, &assign));
+
+        let kept = minimize_with_fill(&prog, 1); // guard blocks the 3-term elimination
+        assert!(
+            kept.variables.iter().any(|v| v.id == 3),
+            "v3 kept under cap 1"
+        );
+        assert!(satisfies(&kept, &assign));
+
+        let elim = minimize_with_fill(&prog, 64); // ample budget → eliminated
+        assert!(
+            elim.variables.iter().all(|v| v.id != 3),
+            "v3 eliminated under cap 64"
+        );
+        assert!(satisfies(&elim, &assign));
+    }
+}

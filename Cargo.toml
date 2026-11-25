@@ -1,0 +1,134 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/backend",
+    "crates/verifier",
+    "crates/groth16",
+    "crates/groth16-opencl",
+    "crates/frontend",
+    "gadgets/tests",
+    "gadgets/xark-aes",
+    "gadgets/xark-bits",
+    "gadgets/xark-blake2s",
+    "gadgets/xark-blake3",
+    "gadgets/xark-ed25519",
+    "gadgets/xark-bignum",
+    "gadgets/xark-grumpkin",
+    "gadgets/xark-hash",
+    "gadgets/xark-keccak",
+    "crates/ir",
+    "crates/macros",
+    "crates/cli",
+    "crates/lang",
+    "crates/prover",
+    "crates/schema",
+    "xtask",
+    "gadgets/xark-merkle",
+    "gadgets/xark-mimc",
+    "gadgets/xark-pedersen",
+    "gadgets/xark-poseidon",
+    "gadgets/xark-poseidon2",
+    "gadgets/xark-secp256k1",
+    "gadgets/xark-secp256r1",
+    "gadgets/xark-sha256",
+    "crates/test-harness",
+    "crates/wasm",
+    "gadgets/xark-curve",
+]
+# The reference Solana program lives under `crates/verifier/reference-program/`
+# but is *intentionally* kept out of the workspace: it's only built via
+# `cargo-build-sbf` (with its own pinned `Cargo.lock`) as the
+# reproducible-build target. See `docs/reproducible-build.md`.
+exclude = [
+    "examples",
+    "formal/templates",
+    "crates/verifier/reference-program",
+]
+
+[workspace.package]
+version = "0.5.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/blueshift-gg/xark"
+homepage = "https://xark.gg"
+# see docs/toolchain.md.
+rust-version = "1.89"
+
+[workspace.dependencies]
+ark-bn254 = { version = "0.6", default-features = false, features = ["curve"] }
+ark-ff = { version = "0.6", default-features = false, features = ["parallel"] }
+ark-ec = { version = "0.6", default-features = false, features = ["parallel"] }
+ark-groth16 = { version = "0.6", default-features = false, features = ["parallel"] }
+ark-relations = { version = "0.6", default-features = false }
+ark-poly = { version = "0.6", default-features = false, features = ["parallel"] }
+ark-serialize = { version = "0.6", default-features = false, features = ["derive"] }
+ark-std = { version = "0.6", default-features = false, features = ["parallel"] }
+ark-snark = { version = "0.6", default-features = false }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+num-bigint = "0.4"
+sha2 = "0.11.0"
+# Pinned to 0.8 / 0.3 to match arkworks 0.6, which depends on rand 0.8
+# (rand_core 0.6). RNGs handed to `Groth16::prove` / `circuit_specific_setup`
+# must implement *that* `RngCore`; rand 0.9/0.10 expose an incompatible trait.
+rand = "0.8"
+rand_chacha = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+# Internal crates: one path and version for the whole workspace.
+# Six dependencies cannot inherit: they need `default-features = false`, which
+# Cargo before 1.99 rejects as an override (pre-2024 crates ignore it). They stay
+# explicit, each marked in place, and track [workspace.package].version:
+#   crates/groth16: xark-ir
+#   crates/prover:  xark-ir
+#   crates/lang:    xark-ir (cfg(not(xark))), xark-prover (wasm32)
+#   crates/wasm:    xark-ir, xark-prover
+xark = { path = "crates/lang", version = "0.5.0" }
+xark-backend = { path = "crates/backend", version = "0.5.0" }
+xark-bignum = { path = "gadgets/xark-bignum", version = "0.5.0" }
+xark-bits = { path = "gadgets/xark-bits", version = "0.5.0" }
+xark-curve = { path = "gadgets/xark-curve", version = "0.5.0" }
+xark-frontend = { path = "crates/frontend", version = "0.5.0" }
+xark-groth16 = { path = "crates/groth16", version = "0.5.0" }
+xark-groth16-opencl = { path = "crates/groth16-opencl", version = "0.5.0" }
+xark-hash = { path = "gadgets/xark-hash", version = "0.5.0" }
+xark-ir = { path = "crates/ir", version = "0.5.0" }
+xark-macros = { path = "crates/macros", version = "0.5.0" }
+xark-poseidon = { path = "gadgets/xark-poseidon", version = "0.5.0" }
+xark-poseidon2 = { path = "gadgets/xark-poseidon2", version = "0.5.0" }
+xark-prover = { path = "crates/prover", version = "0.5.0" }
+xark-schema = { path = "crates/schema", version = "0.5.0" }
+xark-verifier = { path = "crates/verifier", version = "0.5.0" }
+
+# `target_os = "solana"` / `target_arch = "bpf"` are Solana-toolchain-only cfg
+# values; declare them so upstream rustc's `unexpected_cfgs` lint (1.80+) doesn't
+# fire when host CI compiles the `#[cfg(target_os = "solana")] no_std` crates.
+# `xark` is set for the circuit build (`--cfg xark`) so circuit crates gate
+# host-only code/deps on `cfg(not(xark))`; declare it for host builds.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(target_os, values("solana"))',
+    'cfg(target_arch, values("bpf"))',
+    'cfg(kani)',
+    'cfg(xark)',
+] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# CI's test builds (`--cargo-profile ci`): release optimisation without the link-time
+# work above, which costs more to compile (a third more, cold) than tests gain from
+# it. Shipped binaries keep `release`; circuit builds set their own profile.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16
+
+# The frontend runs inside the test process: optimize it even in test builds.
+[profile.dev.package.xark-frontend]
+opt-level = 3
+[profile.dev.package.xark-ir]
+opt-level = 3

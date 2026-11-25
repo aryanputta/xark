@@ -1,0 +1,17 @@
+[package]
+name = "xark-test-harness"
+description = "Test harness for xark circuits: compile-and-solve helpers shared across the gadget test suites."
+keywords = ["zero-knowledge", "zk", "cryptography", "circuit", "groth16"]
+categories = ["cryptography"]
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+[dependencies]
+num-bigint = "0.4"
+xark-ir.workspace = true
+xark-frontend.workspace = true
+serde_json = "1"

@@ -1,0 +1,22 @@
+[package]
+name = "xark-hash"
+description = "Shared Hash and Digest types for xark hash gadgets."
+keywords = ["zero-knowledge", "zk", "cryptography", "circuit", "groth16"]
+categories = ["cryptography"]
+readme = "README.md"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "xark_hash"
+path = "src/lib.rs"
+
+[dependencies]
+xark.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(xark)'] }

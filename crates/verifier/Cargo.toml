@@ -1,0 +1,44 @@
+[package]
+name = "xark-verifier"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "Solana on-chain Groth16 BN254 verifier consuming xark-exported VK + proof bytes."
+keywords = ["zero-knowledge", "zk", "cryptography", "circuit", "groth16"]
+categories = ["cryptography"]
+readme = "README.md"
+
+# Lean publishable verifier: source + README only. Fixtures + the
+# on-chain/host/fuzz test harness live in the (unpublished) `xark-tests` crate.
+exclude = ["tests", "benches"]
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+# The alt_bn128 syscalls' ABI follows the build target: an SBPFv3 build (the
+# current mainnet ABI) sets `target_feature = "static-syscalls"` and calls them
+# statically; an SBPFv0/v2 build calls them by name, which its loader resolves.
+# `static-syscalls` forces the static ABI on any target, which only breaks a v0
+# build (a v3 `callx` in a v0 container is an out-of-bounds call, and the loader
+# rejects the `.so`), so it is off by default: a v3 build is byte-identical either
+# way.
+default = []
+static-syscalls = ["solana-nostd-alt-bn128/static-syscalls"]
+
+[dependencies]
+# `default-features = false`: the syscall ABI follows the target (see
+# `static-syscalls` above).
+solana-nostd-alt-bn128 = { version = "0.1.3", default-features = false }
+solana-program-error = { version = "3", default-features = false }
+# The batch verifier's weights: the `sol_sha256` syscall on-chain, `sha2` off it.
+solana-sha256-hasher = { version = "3.1", default-features = false }
+
+[target.'cfg(not(any(target_os = "solana", target_arch = "bpf")))'.dependencies]
+solana-sha256-hasher = { version = "3.1", default-features = false, features = ["sha2"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,495 @@
+//! `xark-poseidon2`: the Poseidon2 permutation over BN254 `Fr` (state width
+//! `t = 3`, `x^5` S-box, `R_F = 8` full + `R_P = 56` partial rounds), in the
+//! `Field` subset so the compiler inlines it into flat R1CS.
+//!
+//! Poseidon2 (Grassi, Khovratovich, Schofnegger — <https://eprint.iacr.org/2023/323>)
+//! keeps Poseidon's `x^5` S-box but changes the round structure: an extra external
+//! linear layer `M_E` is applied *before* the rounds; full (external) rounds use
+//! `M_E = circ(2,1,1)`; partial (internal) rounds use the sparse `M_I = J +
+//! diag(mu-1)`, which for `t = 3` is `[[2,1,1],[1,2,1],[1,1,3]]`.
+//!
+//! Canonical constants (soundness): the round constants (`RC_EXT` 8x3, `RC_INT` 56)
+//! and internal diagonal are transcribed from Horizen Labs
+//! `poseidon2_instance_bn256.rs` (`new(t=3, d=5, R_F=8, R_P=56,
+//! MAT_DIAG3_M_1=[1,1,2], MAT_INTERNAL3, RC3)`), and the permutation ordering
+//! matches that repo's `Poseidon2::permutation` exactly.
+//!
+//! Only `variable * variable` products emit a gate, so ARK and both linear layers
+//! are free; all 240 gates come from the `x^5` S-boxes (3 gates each).
+//!
+//! The same permutation runs natively on the host as [`native`] (over
+//! `ark_bn254::Fr`), so code outside the circuit (a wallet, a test, a reference
+//! generator) gets the values the circuit commits to without a second
+//! implementation: both instantiate one generic algorithm.
+//!
+//! On top of the permutation: [`hash2`] and [`hash`], the domain-separated
+//! [`commit`] and [`nullifier`], and a Fiat–Shamir [`challenge`]. Plain
+//! functions over the permutation, so their rows are its rows and some linear
+//! combinations.
+
+#![no_std]
+// Gadget code keeps the `x = x + y` style it was written in (the old compiler
+// rejected `+=` on `Field`; the wasm frontend accepts both).
+#![allow(clippy::assign_op_pattern)]
+
+use core::ops::{Add, Mul};
+use xark::Field;
+
+/// State width.
+const T: usize = 3;
+
+/// What the permutation needs from a field. Implemented for `xark::Field` (the
+/// circuit) and, on the host, `ark_bn254::Fr` ([`native`]). Private: it shares
+/// the algorithm between the two, and is not an API.
+trait Elem: Copy + Add<Output = Self> + Mul<Output = Self> {
+    /// A constant from its decimal digits.
+    fn constant(decimal: &'static str) -> Self;
+    fn small(v: u64) -> Self;
+    /// The S-box for `alpha = 5`: `x^5`.
+    fn sbox(self) -> Self;
+}
+
+impl Elem for Field {
+    fn constant(decimal: &'static str) -> Self {
+        Field::from(decimal)
+    }
+    fn small(v: u64) -> Self {
+        Field::from(v)
+    }
+    /// 3 gates via repeated squaring (`x2`, `x4`, `x5`).
+    fn sbox(self) -> Self {
+        self.pow(5)
+    }
+}
+
+/// External round constants (`RC_EXT`, 8 rounds x 3 lanes), Horizen Labs `RC3`.
+const RC_EXT: [[&str; T]; 8] = [
+    [
+        "13128406282895484157369354038809433636203389051939936481821261911791933663254",
+        "18931653859213243425446645781588512487838213266321401679594943842133071369744",
+        "14100663835952519432830313936592734340076294692040144715814219945570907513297",
+    ],
+    [
+        "4829113795940962171577509772302063766582957624337039572002553144762883322341",
+        "15524196826242151316602020382811195434692947787822797536837043495207890599720",
+        "11824742889827005569732308046012743315382715056680481843559537371456931944245",
+    ],
+    [
+        "15824369292130948538570881538463827283727388637222356799784648390667783881850",
+        "7395652367440825515524159918310823124942438011035473842936180620057265532493",
+        "1241351203963627868835881804826107927839874261162687401459390240620885410254",
+    ],
+    [
+        "6688265362431458560657026053775250595854204120757399493099812773970419156132",
+        "18628865421786169197184064906533816626840829027307965436801990532221681661310",
+        "17770079997659052348824924629777474963416629061770380464722096481670103655806",
+    ],
+    [
+        "12123026335854515584932892161148559902027319284544852339906677442670161590992",
+        "11747143856113197599032240626240804787576886917202313931914972592787570603429",
+        "12689083329367969619896630238881490862330991685178863399139986099061967775891",
+    ],
+    [
+        "9363616378570856727297258914956380343356030981401312041884116403700849212733",
+        "13238291046435061349401827110993774315432323243867917623501520885175217584478",
+        "13857006478672530359037215101120381968370236111775805219419707798416454682620",
+    ],
+    [
+        "2022752961549084842139747691238383165524359342011064407942599644003308437489",
+        "11377043765620686524844863869245961003946340433252666374730228559486855986878",
+        "9107028336454933966239128359918274121166034584181733998485105905495346200934",
+    ],
+    [
+        "900063247840342897532382686223939136593244983486268682637380837456165317070",
+        "11261302954518146885624063833699323298803404236535464228351677636819579513431",
+        "7126990412157463341897179572979760225771626877677162088926546182321369054630",
+    ],
+];
+
+/// Internal round constants (`RC_INT`, 56 rounds, lane 0 only).
+const RC_INT: [&str; 56] = [
+    "11811415718957691261673974625780511541635150909919309658375768251762566747317",
+    "17491388639298611159333770975992024026420968324544834879936543171716736973879",
+    "5647537972700463414111873015737673282707440513292923385601908870282442800104",
+    "13098696909140066209556423100763036393001603197583133354863092304798723388565",
+    "6951180250619279643770888203380891623788978362131976553140006882493632020745",
+    "11250251081997661635793843737498879309304455145146915350538637298238893102958",
+    "2246982048814095620312232487641427155108104073024754628893054837638848127964",
+    "18897180842973857564376958241871700087418903006311506731527228148081597475814",
+    "11557404599711559103972421944754928847181400366333080241838467983028485750549",
+    "17156358787639157774388183034849932704703797218604790661321342987075785318260",
+    "8846001957151556825394442611430138293780354129800063716225175548340091032449",
+    "21883449834630454155761926448978525628607016008113566399646971468161186616967",
+    "11782201180140779170005707786217005381305915516114251118577530420880166417952",
+    "19574374768428302416384468550351257389078501920039012797497943057156188490399",
+    "8515987927591912252146893631936027853249294776314628553087138119917968203620",
+    "17278996890957540943430295799612663512184925495827057764219426280563743078943",
+    "4560144125266860756441160513270281593457202308593722614013851111005532208589",
+    "18507459160700813704135500972073304101922968342745790738233104310822653821881",
+    "12853272419783978245995917302225694649366687506910892647236063701566570840428",
+    "14374895923592519298500369713759001634990764548024903321294831249025876110484",
+    "1754533789272381217541450481312878927560073411620344950409407505576538004136",
+    "20448232810715691360468548645921483318770769828465347895613479253435247065293",
+    "4203277692183102377396835282861288449527228200284576966986741905195109677387",
+    "11506339386261725202512749094297334054772084639665212079028551409689271965431",
+    "4408799661846477128378547528471700197737434561274043409442231147309460168718",
+    "10862521404448958117187164110262290189825635328197001646848012017699995213390",
+    "7012061838863338817532836723152059636816924388921632356281537445328382279260",
+    "8337544039076735620694225144163354013921209405711398618659178986151546625400",
+    "16173744372216956516796750206695252671549928142051779144629150462255079400849",
+    "19072902632067672883974143637757649536845413107085656789672471396027868707732",
+    "3487852254355424154670010750480228751987308757772575371606146474985412561707",
+    "17727517395793273304860106667199855253218123164763798377815886217088561516989",
+    "13280131383170382695839570176732265848909891244754629477752800360224963964534",
+    "21504421972374418324171209120165696620934505501591484695447432472073975792776",
+    "13753604424945682926871108642602624411461374991709441590662260371815673344981",
+    "8053178768600673579416591772204841415225213226540397062676127402210384682315",
+    "15101558583452488762759591936595783545455044970328380152280373697190919758012",
+    "6286700389345423344101403023711121482167900236544298155098199100234816571786",
+    "19368755554193272721035317233504719593365546521121074341670771231332472422552",
+    "13306281365497267243785678269212920842854030794417306689235276460198094483575",
+    "10121764749051640353641114693266514664967620368543293902008953934189850195966",
+    "179619165022370308972665071682395477322215797039585945216341070107573537790",
+    "14053393851645634065914179337120715807963438235922115988819572738574714471437",
+    "17345906218970918797922168310670548252023720338285437740234091480846393436478",
+    "10383068492552043678323859571562933490503408853170063884414176092784243607055",
+    "12096041499044892166554391619429604246288825927654072010011878199637889490527",
+    "6449742640166027959651492823149770763572943879017164812917305794918053034585",
+    "6551805454148805882554763665748573416514894105513920161214733482541847062214",
+    "3651410956659878392469489270906333016569562868954890104332567650040497030813",
+    "15219053914464753937310253926447830297339787956721755285255510737973021838676",
+    "881679665678132972106931291023348167890022611850562267871389203532691753422",
+    "5006067481688857073852527145736822635357747460125905556158034280392250104971",
+    "12765332320844032254009314500332101047115754896003948733635815046365410860591",
+    "12908190215073542091623737558383307555705501651914623082354191483197810853182",
+    "1446042792715825508366007519346636771782990303010685652946852324744810237839",
+    "17414863822034645298427260856470503848317996477890518738401812766215195632841",
+];
+
+/// External linear layer `M_E = circ(2,1,1) = [[2,1,1],[1,2,1],[1,1,2]]`.
+///
+/// Since `2*x_i + (others) = x_i + sum`, this is `out[i] = state[i] + sum`, which
+/// is purely additive/linear and emits ZERO gates. (Cross-checked against the
+/// explicit matrix product for 1000 random vectors in `poseidon2_ref.py`.)
+fn matmul_external<F: Elem>(state: [F; T]) -> [F; T] {
+    let s = state[0] + state[1] + state[2];
+    [state[0] + s, state[1] + s, state[2] + s]
+}
+
+/// Internal linear layer `M_I = J + diag(mu - 1)` with `mu - 1 = [1,1,2]`, i.e.
+/// `M_I = [[2,1,1],[1,2,1],[1,1,3]]`. Equivalently `out[i] = sum + diag[i]*x[i]`
+/// with `diag = [1,1,2]`. Only `state[2]` gets a nontrivial constant scale
+/// (`2`), which folds into the linear combination — ZERO gates. (Cross-checked
+/// against the explicit matrix product in `poseidon2_ref.py`.)
+fn matmul_internal<F: Elem>(state: [F; T]) -> [F; T] {
+    let s = state[0] + state[1] + state[2];
+    let two = F::small(2);
+    [s + state[0], s + state[1], s + two * state[2]]
+}
+
+/// One external (full) round: add the 3-lane round constant, S-box ALL lanes,
+/// then apply `M_E`.
+fn external_round<F: Elem>(state: [F; T], rc: [F; T]) -> [F; T] {
+    let s = [state[0] + rc[0], state[1] + rc[1], state[2] + rc[2]];
+    let s = [s[0].sbox(), s[1].sbox(), s[2].sbox()];
+    matmul_external(s)
+}
+
+/// One internal (partial) round: add the round constant to `state[0]`, S-box
+/// `state[0]` ONLY, then apply `M_I`.
+fn internal_round<F: Elem>(state: [F; T], rc0: F) -> [F; T] {
+    let mut s = state;
+    s[0] = s[0] + rc0;
+    s[0] = s[0].sbox();
+    matmul_internal(s)
+}
+
+/// The permutation, for either field.
+///
+/// Schedule: initial `M_E`, then 4 full rounds, 56 partial rounds, 4 full
+/// rounds (matching Horizen Labs `Poseidon2::permutation`).
+fn perm<F: Elem>(state: [F; T]) -> [F; T] {
+    let rc_ext: [[F; T]; 8] = RC_EXT.map(|row| row.map(F::constant));
+    let rc_int: [F; 56] = RC_INT.map(F::constant);
+
+    // Initial external linear layer (Poseidon2 adds this before the rounds).
+    let mut s = matmul_external(state);
+
+    // First 4 external (full) rounds.
+    let mut r = 0usize;
+    while r < 4usize {
+        s = external_round(s, rc_ext[r]);
+        r += 1;
+    }
+
+    // 56 internal (partial) rounds.
+    let mut r = 0usize;
+    while r < 56usize {
+        s = internal_round(s, rc_int[r]);
+        r += 1;
+    }
+
+    // Last 4 external (full) rounds.
+    let mut r = 0usize;
+    while r < 4usize {
+        s = external_round(s, rc_ext[4usize + r]);
+        r += 1;
+    }
+
+    s
+}
+
+/// See [`hash2`].
+fn hash2_in<F: Elem>(a: F, b: F) -> F {
+    perm([a, b, F::small(0)])[0]
+}
+
+/// See [`hash`].
+fn hash_in<F: Elem, const N: usize>(inputs: [F; N]) -> F {
+    let mut state = [F::small(0), F::small(0), F::small(N as u64)];
+    let mut i = 0usize;
+    while i < N {
+        state[0] = state[0] + inputs[i];
+        if i + 1 < N {
+            state[1] = state[1] + inputs[i + 1];
+        }
+        state = perm(state);
+        i += 2;
+    }
+    state[0]
+}
+
+/// The Poseidon2 permutation on a width-3 BN254 state.
+pub fn poseidon2_perm(state: [Field; T]) -> [Field; T] {
+    perm(state)
+}
+
+/// 2-to-1 compression: absorb `a` and `b` alongside a zero capacity element, run
+/// the permutation once, and squeeze the first state element.
+///
+/// `hash2(a, b) = poseidon2_perm([a, b, 0])[0]`.
+pub fn hash2(a: Field, b: Field) -> Field {
+    hash2_in(a, b)
+}
+
+/// Variable-length hash of `N` field elements via a Poseidon2 **sponge**
+/// (rate 2, capacity 1). `N` is a compile-time constant (a circuit is
+/// fixed-size, so length is chosen at compile time and the absorb loop unrolls).
+///
+/// Construction: the capacity lane is seeded with the length `N` for domain
+/// separation (so `hash([a]) != hash([a, 0])`); inputs are absorbed two at a
+/// time by *adding* into the rate lanes and permuting; a final partial pair is
+/// zero-padded; the first state element is squeezed as the digest.
+pub fn hash<const N: usize>(inputs: [Field; N]) -> Field {
+    hash_in(inputs)
+}
+
+// ===========================================================================
+// Domain-separated sponges: commitments and nullifiers.
+//
+// Every function below seeds the capacity lane with `2^64 · domain + len`. The
+// existing functions seed it with `0` (`hash2`, and so every Merkle node built on
+// it) or with a length `N < 2^64` (`hash`), so for `domain ≥ 1` no two of them ever
+// start the permutation from the same capacity value. A sponge whose capacity
+// starts from distinct values computes independent functions (the sponge
+// indifferentiability argument: Bertoni, Daemen, Peeters, Van Assche, "On the
+// indifferentiability of the sponge construction", Eurocrypt 2008; the Poseidon
+// paper, eprint 2019/458 §4.2, domain-separates its modes the same way), so a
+// commitment equals a nullifier or a node only by a Poseidon2 collision.
+// ===========================================================================
+
+/// The domain of [`commit`].
+pub const DOMAIN_COMMIT: u64 = 1;
+/// The domain of [`nullifier`].
+pub const DOMAIN_NULLIFIER: u64 = 2;
+// Domain 3 is kept for authenticated encryption, which a later release may add.
+
+/// The capacity lane's first value: `2^64 · domain + len`. Constants only, so it
+/// costs no row.
+fn iv<F: Elem>(domain: u64, len: usize) -> F {
+    let two32 = F::small(1 << 32);
+    F::small(domain) * two32 * two32 + F::small(len as u64)
+}
+
+/// The sponge of [`hash`] (rate 2, capacity 1, inputs added two at a time) with
+/// the capacity seeded with [`iv`]`(domain, len)`.
+fn tagged<F: Elem>(domain: u64, inputs: &[F]) -> F {
+    let mut state = [F::small(0), F::small(0), iv(domain, inputs.len())];
+    let mut i = 0usize;
+    while i < inputs.len() {
+        state[0] = state[0] + inputs[i];
+        if i + 1 < inputs.len() {
+            state[1] = state[1] + inputs[i + 1];
+        }
+        state = perm(state);
+        i += 2;
+    }
+    state[0]
+}
+
+/// A commitment to `N ≥ 1` field elements: the [`hash`] sponge in the
+/// [`DOMAIN_COMMIT`] domain (capacity seeded with `2^64 + N`). It hides the
+/// values only when one of them is a random secret (a blinding factor, a note's
+/// randomness): put one in.
+///
+/// It never equals a [`nullifier`], a [`hash`] or a [`hash2`] (so a Merkle node)
+/// short of a Poseidon2 collision: see the domain tags above.
+pub fn commit<const N: usize>(inputs: [Field; N]) -> Field {
+    const { assert!(N >= 1, "commit::<N>: N must be at least 1") };
+    tagged(DOMAIN_COMMIT, &inputs)
+}
+
+/// A nullifier from `N ≥ 1` field elements (typically a secret key and what it
+/// nullifies: a note's commitment and position, a poll): the [`hash`] sponge in
+/// the [`DOMAIN_NULLIFIER`] domain (capacity seeded with `2 · 2^64 + N`). Never
+/// equal to a [`commit`] of the same inputs, a [`hash`] or a [`hash2`], short of a
+/// Poseidon2 collision.
+pub fn nullifier<const N: usize>(inputs: [Field; N]) -> Field {
+    const { assert!(N >= 1, "nullifier::<N>: N must be at least 1") };
+    tagged(DOMAIN_NULLIFIER, &inputs)
+}
+
+/// A Fiat–Shamir challenge: the low `BITS` bits (little-endian, each a pinned
+/// bit) of `hash(transcript)`'s canonical decomposition. Pass the bits to a
+/// scalar multiplication, or `Field::from_bits` them for the challenge as a field
+/// element. Put everything the prover has sent so far, and a label if the
+/// protocol has more than one kind of challenge, in `transcript`.
+///
+/// The decomposition is canonical (`to_bits_canonical`, 353 rows), so the bits are
+/// a function of the transcript: a prover can't pick another challenge by picking
+/// another representative. A 128-bit challenge is a Halo-style short challenge:
+/// its integer is below both BN254's and Grumpkin's orders, the same scalar on
+/// either curve. Costs `hash::<N>`'s permutations and those 353 rows.
+pub fn challenge<const N: usize, const BITS: usize>(transcript: [Field; N]) -> [Field; BITS] {
+    const { assert!(BITS <= 254, "challenge::<N, BITS>: BITS must be <= 254") };
+    let bits = hash(transcript).to_bits_canonical();
+    let mut out = [Field::from(0u8); BITS];
+    let mut i = 0usize;
+    while i < BITS {
+        out[i] = bits[i];
+        i += 1;
+    }
+    out
+}
+
+/// The same functions on the host, over `ark_bn254::Fr`: the values the circuit
+/// versions constrain, computed natively (not in a circuit build).
+///
+/// ```
+/// use xark_poseidon2::native::{hash2, Fr};
+/// let digest: Fr = hash2(Fr::from(1u64), Fr::from(2u64));
+/// ```
+#[cfg(not(xark))]
+pub mod native {
+    use core::str::FromStr;
+
+    pub use ark_bn254::Fr;
+    use ark_ff::Field as _;
+
+    impl super::Elem for Fr {
+        fn constant(decimal: &'static str) -> Self {
+            Fr::from_str(decimal).unwrap_or_else(|_| unreachable!("a canonical round constant"))
+        }
+        fn small(v: u64) -> Self {
+            Fr::from(v)
+        }
+        fn sbox(self) -> Self {
+            self.square().square() * self
+        }
+    }
+
+    /// [`crate::poseidon2_perm`], natively.
+    pub fn poseidon2_perm(state: [Fr; 3]) -> [Fr; 3] {
+        super::perm(state)
+    }
+
+    /// [`crate::hash2`], natively.
+    pub fn hash2(a: Fr, b: Fr) -> Fr {
+        super::hash2_in(a, b)
+    }
+
+    /// [`crate::hash`], natively.
+    pub fn hash<const N: usize>(inputs: [Fr; N]) -> Fr {
+        super::hash_in(inputs)
+    }
+
+    /// [`crate::commit`], natively.
+    pub fn commit<const N: usize>(inputs: [Fr; N]) -> Fr {
+        const { assert!(N >= 1, "commit::<N>: N must be at least 1") };
+        super::tagged(super::DOMAIN_COMMIT, &inputs)
+    }
+
+    /// [`commit`] of any number `≥ 1` of elements, known only at run time.
+    ///
+    /// # Panics
+    /// On no elements, which [`crate::commit`] doesn't take either.
+    pub fn commit_slice(inputs: &[Fr]) -> Fr {
+        assert!(!inputs.is_empty(), "commit: at least one element");
+        super::tagged(super::DOMAIN_COMMIT, inputs)
+    }
+
+    /// [`crate::nullifier`], natively.
+    pub fn nullifier<const N: usize>(inputs: [Fr; N]) -> Fr {
+        const { assert!(N >= 1, "nullifier::<N>: N must be at least 1") };
+        super::tagged(super::DOMAIN_NULLIFIER, &inputs)
+    }
+
+    /// [`nullifier`] of any number `≥ 1` of elements, known only at run time.
+    ///
+    /// # Panics
+    /// On no elements, which [`crate::nullifier`] doesn't take either.
+    pub fn nullifier_slice(inputs: &[Fr]) -> Fr {
+        assert!(!inputs.is_empty(), "nullifier: at least one element");
+        super::tagged(super::DOMAIN_NULLIFIER, inputs)
+    }
+
+    /// [`crate::challenge`], natively, as the field element its bits spell: the
+    /// low `BITS` bits of `hash(transcript)`.
+    pub fn challenge<const N: usize, const BITS: usize>(transcript: [Fr; N]) -> Fr {
+        const { assert!(BITS <= 254, "challenge::<N, BITS>: BITS must be <= 254") };
+        use ark_ff::{BigInteger, PrimeField};
+        let bits = hash(transcript).into_bigint().to_bits_le();
+        Fr::from_bigint(<Fr as PrimeField>::BigInt::from_bits_le(&bits[..BITS]))
+            .unwrap_or_else(|| unreachable!("fewer than 254 bits of a value below r"))
+    }
+
+    /// [`hash`] of any number of elements, known only at run time (a client
+    /// hashing a value's field elements).
+    pub fn hash_slice(inputs: &[Fr]) -> Fr {
+        let mut state = [
+            Fr::from(0u64),
+            Fr::from(0u64),
+            Fr::from(inputs.len() as u64),
+        ];
+        for pair in inputs.chunks(2) {
+            state[0] += pair[0];
+            if let Some(b) = pair.get(1) {
+                state[1] += b;
+            }
+            state = poseidon2_perm(state);
+        }
+        state[0]
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn slices_hash_like_arrays() {
+            let x: [Fr; 5] = core::array::from_fn(|i| Fr::from(i as u64 * 7 + 1));
+            assert_eq!(hash_slice(&x[..0]), hash::<0>([]));
+            assert_eq!(hash_slice(&x[..1]), hash::<1>([x[0]]));
+            assert_eq!(hash_slice(&x[..4]), hash::<4>([x[0], x[1], x[2], x[3]]));
+            assert_eq!(hash_slice(&x), hash(x));
+        }
+    }
+}
+
+/// Bring the gadget's public API into scope alongside the xark circuit
+/// essentials (`Field`, `Public`/`Private`, `require_eq`, `#[circuit]`), so a
+/// circuit crate needs a single `use xark_poseidon2::prelude::*;`.
+pub mod prelude {
+    pub use crate::*;
+    pub use xark::prelude::*;
+}

@@ -1,0 +1,681 @@
+//! `xark prove` — produce a Groth16 proof for a built circuit.
+//!
+//! Reads the built `circuit.xbc`, solves the witness from the `--inputs` values,
+//! and proves with `xark-groth16`'s streaming prover against the proving key
+//! `xark setup` wrote (neither the R1CS nor the key is ever fully in memory). The
+//! proof and its public inputs are written next to the build output.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use clap::Args;
+use rand::rngs::OsRng;
+use rand::{CryptoRng, RngCore, SeedableRng};
+use rand_chacha::ChaCha20Rng;
+
+use xark_backend::proof::ProofBundle;
+use xark_backend::serialization::write_public_inputs;
+use xark_groth16::{ConstraintSource, PkSource};
+use xark_prover::{XarkCircuit, fr_from_decimal};
+
+use super::{explain_unsatisfied, resolve_input_ids, setup, stream_witness};
+use crate::xark_project::XarkProject;
+
+#[derive(Args, Debug)]
+pub struct ProveArgs {
+    /// Circuit crate directory (or its `target/xark/<name>/` output dir). Defaults to
+    /// the current directory; the paths below are inferred from it.
+    #[arg(value_hint = clap::ValueHint::DirPath)]
+    pub path: Option<PathBuf>,
+
+    /// Circuit inputs as inline JSON `{"name": value, …}` or a path to an input
+    /// file (a JSON object, or `name = value` lines with `#` comments and blank
+    /// lines ignored). Provide every public and private input the circuit
+    /// declares; array elements use the flat names `xark inspect` prints, e.g.
+    /// `path[0]`. Names may be as declared (`net_worth`, as `inputs.example.json`
+    /// and Rust's `<Fn>Inputs::to_json()` write them) or camelCase (`netWorth`, as a
+    /// generated client has them). One argument for both — inline for a quick proof,
+    /// a file for a big witness (a 2-in/2-out JoinSplit has ~200 inputs).
+    #[arg(long = "inputs", value_name = "JSON|FILE")]
+    pub inputs: Option<String>,
+
+    /// Proving key. Inferred when omitted: `keys/<name>/pk.bin` in a project, and
+    /// otherwise `<crate>/target/xark/<name>/pk.bin`.
+    #[arg(long, value_hint = clap::ValueHint::FilePath)]
+    pub proving_key: Option<PathBuf>,
+    /// Directory to write the proof (`proof.bin`) and its public inputs
+    /// (`public_inputs.bin`) to (created if missing; a warning if it isn't empty).
+    /// Defaults to `<crate>/target/xark/<name>/`.
+    #[arg(long, value_hint = clap::ValueHint::DirPath)]
+    pub out: Option<PathBuf>,
+    /// Reproducible-randomness escape hatch for test fixtures **only**. Groth16
+    /// proof randomness blinds the witness — making it reproducible leaks
+    /// information about the witness across proofs.
+    #[arg(long, value_name = "SEED")]
+    pub deterministic_rng: Option<u64>,
+    /// Warm the caches that make later proofs against this key faster. On a miss,
+    /// write: the decoded proving key (`pk.decoded.bin`, uncompressed: later
+    /// proofs skip point decompression — Ed25519 prove ~2.3× faster, at 2× the
+    /// key's disk size), and for a minimized key without one, its `r1cs.stream`
+    /// (skips the minimize). A current cache is always used regardless of this
+    /// flag; the flag only controls *writing* it.
+    /// Ideal for producing many proofs.
+    #[arg(long, default_value_t = false)]
+    pub cache: bool,
+
+    /// Keep a single domain-sized vector in memory during
+    /// the quotient step by parking the others in a temp file beside the proving
+    /// key (rows are streamed once more). The file holds witness-derived data: on
+    /// unix it's readable by you only and unlinked as soon as it's open, so it never
+    /// outlives the process. For proving the largest circuits on small machines.
+    #[arg(long, default_value_t = false)]
+    pub low_memory: bool,
+
+    /// Verify the proof against the key before writing it (one pairing check,
+    /// under a millisecond). Without it, inputs that break a constraint, or a key
+    /// made for another build of the circuit, give a proof no verifier accepts;
+    /// with it, they are an error naming the constraint and its source line.
+    #[arg(long, default_value_t = false)]
+    pub verify: bool,
+
+    /// The prover: `cpu`, or `opencl` (experimental) to put the quotient and the
+    /// H MSM on a GPU beside the CPU. A GPU proves a circuit from a 2^18-point
+    /// domain on (a smaller one proves on the CPU), and its proof is always
+    /// verified: one that fails is proved again on the CPU.
+    #[arg(long, value_enum, default_value_t)]
+    pub prover: super::device::ProverKind,
+
+    /// Prove on a GPU although its MSM is variable-time and its buffers aren't
+    /// guaranteed to be erased: only on trusted, single-tenant hardware.
+    #[arg(long, default_value_t = false)]
+    pub acknowledge_gpu_side_channel_risk: bool,
+}
+
+/// See `setup::SetupRng` for rationale: `prove` bounds its RNG by
+/// `CryptoRng + RngCore`, which trait objects cannot carry.
+#[allow(clippy::large_enum_variant)]
+enum ProveRng {
+    Det(ChaCha20Rng),
+    Os(OsRng),
+}
+
+impl RngCore for ProveRng {
+    fn next_u32(&mut self) -> u32 {
+        match self {
+            ProveRng::Det(r) => r.next_u32(),
+            ProveRng::Os(r) => r.next_u32(),
+        }
+    }
+    fn next_u64(&mut self) -> u64 {
+        match self {
+            ProveRng::Det(r) => r.next_u64(),
+            ProveRng::Os(r) => r.next_u64(),
+        }
+    }
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        match self {
+            ProveRng::Det(r) => r.fill_bytes(dest),
+            ProveRng::Os(r) => r.fill_bytes(dest),
+        }
+    }
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> {
+        match self {
+            ProveRng::Det(r) => r.try_fill_bytes(dest),
+            ProveRng::Os(r) => r.try_fill_bytes(dest),
+        }
+    }
+}
+
+impl CryptoRng for ProveRng {}
+
+pub fn run(args: ProveArgs) -> Result<()> {
+    // A device sets up from the start, beside everything up to the prove.
+    let device =
+        super::device::Pending::start(args.prover, args.acknowledge_gpu_side_channel_risk)?;
+    let project = XarkProject::resolve(args.path.clone())?;
+    let pk_path = args
+        .proving_key
+        .clone()
+        .unwrap_or_else(|| project.proving_key());
+    let out_dir = args.out.clone().unwrap_or_else(|| project.xark_dir.clone());
+    let proof_out = out_dir.join("proof.bin");
+
+    // Auto-pipeline: let a newcomer `xark prove` straight after writing a
+    // circuit. Builds and/or sets up on demand, but only when the default
+    // artifacts are *absent* — it never overwrites an existing build or key, so
+    // it just replaces a "run build first" error with actually doing it.
+    autobuild_and_setup(&args, &project, &pk_path)?;
+
+    // `PROVE_TIME=1` (a `debug` build) adds the constraint count and whether the
+    // rows came from the cache to the solve / prove times every proof reports.
+    let timing = super::dbg_flag("PROVE_TIME");
+    let xbc = project.proving_xbc();
+    // Inputs come from `--inputs`: inline JSON or a file path (agnostic).
+    let inputs = match &args.inputs {
+        Some(arg) => super::read_inputs(&project.xark_dir, arg)?,
+        None => Default::default(),
+    };
+    let sources = crate::commands::load_sources(&project.xark_dir);
+
+    // The streaming prover: neither the R1CS nor the key is ever fully in memory.
+    // A `reduced` key streams rows straight from the bytecode; a `minimized` key
+    // streams them from the `r1cs.stream` setup wrote next to it (rebuilt from
+    // `circuit.xbc` if missing or unreadable). A key whose metadata doesn't say
+    // (a ceremony's) is told apart by its size.
+    let row_file = pk_path.with_file_name("r1cs.stream");
+    let kind = match key_form(&pk_path).as_deref() {
+        Some("reduced") => StreamKind::Bytecode,
+        Some("minimized") => StreamKind::RowFile(row_file),
+        _ if row_file.exists() => StreamKind::RowFile(row_file),
+        _ => {
+            let bytes = fs::read(&xbc)
+                .with_context(|| format!("reading {} (run `xark build` first?)", xbc.display()))?;
+            let src = xark_groth16::BytecodeSource::new(&bytes).map_err(|e| anyhow::anyhow!(e))?;
+            let pk = super::read_artifact(
+                &pk_path,
+                "proving key",
+                "xark setup",
+                "run `xark setup` first?",
+                || xark_groth16::SerializedPk::open(&pk_path),
+            )?;
+            if pk.header().a_len == src.layout().num_vars() {
+                StreamKind::Bytecode
+            } else {
+                StreamKind::RowFile(row_file)
+            }
+        }
+    };
+    let (proof, public, times) = prove_streaming(
+        &args,
+        &xbc,
+        &pk_path,
+        kind,
+        &inputs,
+        sources.as_ref(),
+        timing,
+        device,
+    )?;
+    write_outputs(&args, &proof_out, &out_dir, proof, public, times)
+}
+
+/// How long the two halves of a proof took: solving the witness (with the row
+/// source built beside it) and the Groth16 prove (key read, MSMs and, with `--verify`, the check).
+struct ProveTimes {
+    solve: std::time::Duration,
+    prove: std::time::Duration,
+}
+
+/// The prover RNG: OS randomness, or — test fixtures only — a fixed seed (refused
+/// for production keys: reproducible randomness breaks zero-knowledge).
+fn prove_rng(args: &ProveArgs, pk_path: &std::path::Path) -> Result<ProveRng> {
+    if args.deterministic_rng.is_some() && key_is_production_safe(pk_path) {
+        anyhow::bail!(
+            "--deterministic-rng cannot be used with a production key \
+             (metadata.production_safe = true): reproducible prover randomness breaks \
+             zero-knowledge. Remove the flag to prove with OS randomness."
+        );
+    }
+    Ok(match args.deterministic_rng {
+        Some(seed) => {
+            eprintln!(
+                "WARN: --deterministic-rng makes proofs reproducible; do not use in production."
+            );
+            ProveRng::Det(ChaCha20Rng::seed_from_u64(seed))
+        }
+        None => ProveRng::Os(OsRng),
+    })
+}
+
+/// The R1CS form the key was generated for (`metadata.json` `r1cs_form`):
+/// `"reduced"`, `"minimized"`, or `None` for a key that predates the field
+/// (minimized).
+fn key_form(pk_path: &std::path::Path) -> Option<String> {
+    key_meta(pk_path, "r1cs_form").and_then(|f| f.as_str().map(str::to_string))
+}
+
+/// Field `key` of the `metadata.json` next to the proving key.
+fn key_meta(pk_path: &std::path::Path, key: &str) -> Option<serde_json::Value> {
+    let dir = pk_path.parent()?;
+    fs::read_to_string(dir.join("metadata.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|mut v| v.get_mut(key).map(serde_json::Value::take))
+}
+
+/// Where the streaming prover reads constraint rows from.
+enum StreamKind {
+    /// The template-reduced rows, expanded from `circuit.xbc`.
+    Bytecode,
+    /// The keyed rows from an `r1cs.stream` row file.
+    RowFile(PathBuf),
+}
+
+/// The streaming path: solve by streaming the hint
+/// program, then prove with `xark-groth16` — rows expanded window-by-window from
+/// the bytecode and the key read chunk-by-chunk, so neither the R1CS nor the key
+/// is ever resident. Self-verified against the key's `vk`.
+#[allow(clippy::too_many_arguments)]
+fn prove_streaming(
+    args: &ProveArgs,
+    xbc: &std::path::Path,
+    pk_path: &std::path::Path,
+    kind: StreamKind,
+    inputs: &BTreeMap<String, String>,
+    sources: Option<&xark_ir::SourceMap>,
+    timing: bool,
+    mut device: Option<super::device::Pending>,
+) -> Result<(
+    xark_groth16::Proof<ark_bn254::Bn254>,
+    Vec<ark_bn254::Fr>,
+    ProveTimes,
+)> {
+    let t = std::time::Instant::now();
+    let bytes = std::fs::read(xbc).with_context(|| format!("reading {}", xbc.display()))?;
+    let fingerprint = super::sha256_hex(&bytes);
+    // A key made for another circuit can't prove this one: say so, rather than
+    // give a proof that doesn't verify. One made from another build of the same
+    // circuit (another Rust version) may not fit either: a key fits the build it
+    // was made from (a project keeps that build beside its key).
+    match super::key_fit(pk_path, &bytes) {
+        super::KeyFit::Different => anyhow::bail!(
+            "the proving key {} was made for a different build of the circuit \
+             (the circuit changed since `xark setup`): run `xark setup` again",
+            pk_path.display()
+        ),
+        super::KeyFit::SameCircuit => eprintln!(
+            "note: {} was made from another build of this circuit (the same constraints, \
+             compiled differently, e.g. by another Rust version); proving with it, but a \
+             key fits the build it was made from: if the proof doesn't verify, run \
+             `xark setup` for a new key",
+            pk_path.display()
+        ),
+        super::KeyFit::Same => {}
+    }
+    // The row source and the witness don't depend on each other: build the source
+    // while another thread solves. Its error, if both fail, is reported first, as
+    // when they ran one after the other.
+    let (built, solved) = std::thread::scope(|s| {
+        let solved = s.spawn(|| {
+            let vars = xark_ir::function_decode::decode_input_vars(&bytes)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let id_inputs = resolve_input_ids(&vars, inputs)?;
+            drop(vars);
+            let assign = stream_witness(&bytes, sources, &id_inputs)?;
+            anyhow::Ok((assign, id_inputs))
+        });
+        let digest = super::recorded_digest(pk_path, &fingerprint);
+        let built = row_source(args, &bytes, &fingerprint, digest.as_deref(), kind);
+        if let (Ok((src, _)), Some(device)) = (&built, device.as_mut()) {
+            device.hint((src.num_constraints() + src.layout().num_instance()).next_power_of_two());
+        }
+        let solved = solved
+            .join()
+            .unwrap_or_else(|e| std::panic::resume_unwind(e));
+        (built, solved)
+    });
+    let (src, cached) = built?;
+    let (assign_fp, id_inputs) = solved?;
+    let t_solve = t.elapsed();
+    let z = src.layout().assignment(|id| {
+        assign_fp
+            .get(id as usize)
+            .and_then(Option::as_ref)
+            .map(|v| {
+                v.as_bn254_fr()
+                    .unwrap_or_else(|| fr_from_decimal(&v.to_decimal()))
+            })
+    });
+    drop(assign_fp);
+    let public = z[1..src.layout().num_instance()].to_vec();
+    let mut pk = super::read_artifact(
+        pk_path,
+        "proving key",
+        "xark setup",
+        "run `xark setup` first?",
+        || xark_groth16::SerializedPk::open(pk_path),
+    )?;
+    // A decoded (uncompressed) copy of a compressed key skips the per-point
+    // decompression. Used only if its header — vk, β, δ, vector lengths — is
+    // exactly this key's (a different setup has a different vk).
+    let decoded = pk_path.with_file_name("pk.decoded.bin");
+    let mut tee_tmp = None;
+    if pk.is_compressed() {
+        match xark_groth16::SerializedPk::open(&decoded) {
+            Ok(c) if !c.is_compressed() && c.header() == pk.header() => {
+                eprintln!("using decoded key cache {}", decoded.display());
+                pk = c;
+            }
+            _ if args.cache => {
+                let tmp = decoded.with_extension("bin.tmp");
+                let f = fs::File::create(&tmp)
+                    .with_context(|| format!("creating {}", tmp.display()))?;
+                pk.tee_uncompressed(Box::new(std::io::BufWriter::with_capacity(1 << 20, f)))?;
+                tee_tmp = Some(tmp);
+            }
+            _ => {}
+        }
+    }
+    let mut rng = prove_rng(args, pk_path)?;
+    let t_prove = std::time::Instant::now();
+    let cfg = xark_groth16::ProverConfig {
+        spill_dir: args.low_memory.then(|| {
+            pk_path
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(std::env::temp_dir)
+        }),
+        self_check: args.verify,
+        ..xark_groth16::ProverConfig::default()
+    };
+    let proved = match device {
+        Some(device) => {
+            let (proved, back, report) = device.prove(&*src, &z, pk, &mut rng, cfg);
+            pk = back;
+            eprintln!("{report}");
+            proved
+        }
+        None => xark_groth16::prove(&*src, &z, &mut pk, &mut rng, &cfg),
+    };
+    let proof = match proved {
+        Ok(proof) => proof,
+        Err(e) => {
+            // With `--verify`, a witness that doesn't satisfy the circuit fails the
+            // proof's check: name the constraint (and source line) it breaks.
+            explain_unsatisfied(&bytes, sources, &id_inputs)?;
+            anyhow::bail!("streaming prove: {e}")
+        }
+    };
+    if let Some(tmp) = tee_tmp {
+        if pk.finish_tee()? {
+            fs::rename(&tmp, &decoded).with_context(|| format!("writing {}", decoded.display()))?;
+            println!("Wrote {} (decoded key cache)", decoded.display());
+        } else {
+            let _ = fs::remove_file(&tmp);
+        }
+    }
+    let times = ProveTimes {
+        solve: t_solve,
+        prove: t_prove.elapsed(),
+    };
+    if timing {
+        eprintln!(
+            "PROVE_TIME: [streaming] solve={t_solve:?} prove={:?} ({} constraints) cached={cached}",
+            times.prove,
+            src.num_constraints()
+        );
+    }
+    Ok((proof, public, times))
+}
+
+/// The rows to prove from, and whether they came without re-running the minimize
+/// (the `cached=` marker).
+fn row_source(
+    args: &ProveArgs,
+    bytes: &[u8],
+    fingerprint: &str,
+    digest: Option<&str>,
+    kind: StreamKind,
+) -> Result<(Box<dyn ConstraintSource>, bool)> {
+    let mut cached = true;
+    let src: Box<dyn ConstraintSource> = match kind {
+        StreamKind::Bytecode => {
+            Box::new(xark_groth16::BytecodeSource::new(bytes).map_err(|e| anyhow::anyhow!(e))?)
+        }
+        StreamKind::RowFile(path) => {
+            let read = std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|rf| xark_groth16::RowFileSource::new(rf).map_err(|e| e.to_string()))
+                .and_then(|src| {
+                    // Setup marks the rows with the circuit's digest: take the
+                    // key's record of it before re-expanding the circuit.
+                    if digest == Some(src.file().fingerprint())
+                        || xark_ir::function_decode::row_file_fits(
+                            src.file().fingerprint(),
+                            fingerprint,
+                            bytes,
+                        )
+                    {
+                        Ok(src)
+                    } else {
+                        Err("written for a different circuit.xbc".into())
+                    }
+                });
+            match read {
+                Ok(src) => Box::new(src),
+                Err(why) => {
+                    // Rebuild the minimized circuit exactly as `xark setup` keyed it;
+                    // `--cache` writes it back for the next proof.
+                    eprintln!(
+                        "note: {} unusable ({why}); rebuilding the minimized circuit",
+                        path.display()
+                    );
+                    cached = false;
+                    let reduced = xark_ir::function_decode::expand_function_blob_reduced(bytes)
+                        .map_err(|e| anyhow::anyhow!(e))?
+                        .into_r1cs();
+                    let circuit = XarkCircuit::for_setup(reduced);
+                    let digest = super::r1cs_digest(bytes);
+                    let rows = xark_ir::r1cs_stream::encode(&digest, circuit.prog());
+                    drop(circuit);
+                    if args.cache {
+                        fs::write(&path, &rows)
+                            .with_context(|| format!("writing {}", path.display()))?;
+                        println!("Wrote {}", path.display());
+                    }
+                    Box::new(
+                        xark_groth16::RowFileSource::new(rows).map_err(|e| anyhow::anyhow!(e))?,
+                    )
+                }
+            }
+        }
+    };
+    Ok((src, cached))
+}
+
+/// Write the proof and public inputs, and print a summary.
+#[allow(clippy::too_many_arguments)]
+fn write_outputs(
+    args: &ProveArgs,
+    proof_out: &std::path::Path,
+    out_dir: &std::path::Path,
+    proof: xark_groth16::Proof<ark_bn254::Bn254>,
+    public: Vec<ark_bn254::Fr>,
+    times: ProveTimes,
+) -> Result<()> {
+    let bundle = ProofBundle {
+        proof,
+        public_inputs: public.clone(),
+    };
+
+    if args.out.is_some() {
+        super::warn_if_not_empty(out_dir, "proof");
+    }
+    fs::create_dir_all(out_dir)
+        .with_context(|| format!("creating output dir {}", out_dir.display()))?;
+    bundle.write_proof(proof_out)?;
+
+    // Public inputs as canonical binary (primary format for verify/export).
+    let public_path = out_dir.join("public_inputs.bin");
+    write_public_inputs(&public, &public_path)?;
+
+    // Fingerprint the proof itself (SHA-256 of `proof.bin`): a stable id for
+    // *this* proof, to reference or track it.
+    let proof_bin =
+        fs::read(proof_out).with_context(|| format!("reading {}", proof_out.display()))?;
+    let proof_sha = super::sha256_hex(&proof_bin);
+
+    println!("Wrote {}", proof_out.display());
+    println!("Wrote {}", public_path.display());
+    println!(
+        "\n{}",
+        crate::style::brand(&format!(
+            "✅ Proof produced{} ({} public input(s)).",
+            if args.verify { " and verified" } else { "" },
+            public.len()
+        ))
+    );
+    println!(
+        "{}",
+        crate::style::dim(&format!(
+            "   solved in {:.2}s, proved in {:.2}s",
+            times.solve.as_secs_f64(),
+            times.prove.as_secs_f64()
+        ))
+    );
+
+    println!(
+        "\nproof sha256:  0x{proof_sha}  {}",
+        crate::style::dim("# fingerprint — copy to reference this exact proof")
+    );
+
+    let p = super::path_arg(&args.path);
+    // A proof written elsewhere (`--out`), or made with another key: point
+    // `verify` and `export` at them.
+    let mut files = String::new();
+    // The verifying key beside a `--proving-key`: `xark setup`'s or a ceremony's.
+    if let Some(vk) = args
+        .proving_key
+        .as_ref()
+        .and_then(|pk| pk.parent())
+        .and_then(|d| {
+            ["vk.bin", "verifying_key.bin"]
+                .map(|f| d.join(f))
+                .into_iter()
+                .find(|vk| vk.exists())
+        })
+    {
+        files += &format!(" --verifying-key {}", super::shown(&vk));
+    }
+    if args.out.is_some() {
+        files += &format!(
+            " --proof {} --public-inputs {}",
+            super::shown(proof_out),
+            super::shown(&public_path)
+        );
+    }
+    let mut steps = vec![(
+        format!("xark verify {p}{files}"),
+        "check this proof locally",
+    )];
+    let in_project = XarkProject::resolve(args.path.clone())
+        .ok()
+        .and_then(|p| p.project_root())
+        .is_some();
+    if in_project {
+        steps.push((
+            "xark build".to_string(),
+            "the verifier crate and TypeScript client (clients/), then the programs",
+        ));
+    } else {
+        steps.push((
+            format!("xark client {p}"),
+            "generate a typed TypeScript client (prove + verify in JS)",
+        ));
+        steps.push((
+            format!("xark export {p}{files}"),
+            "generate the onchain Solana verifier crate",
+        ));
+    }
+    println!("\n{}", crate::style::next_steps(&steps));
+    Ok(())
+}
+
+/// When `xark prove` is run before `build`/`setup`, do them on demand so the
+/// first-time loop is a single command. Triggers only on *missing* default
+/// artifacts; an explicit `--proving-key` path is left untouched.
+fn autobuild_and_setup(
+    args: &ProveArgs,
+    project: &XarkProject,
+    pk_path: &std::path::Path,
+) -> Result<()> {
+    // "Built" is signalled by `circuit.xbc`, which every build emits.
+    let mut is_built = project.circuit_xbc().exists();
+    if !is_built && let Some(dir) = find_crate_dir(args, project) {
+        eprintln!(
+            "{} no build found — running `xark build {}` first…",
+            crate::style::tag(),
+            dir.display()
+        );
+        if crate::cli::cmd_build(&dir.display().to_string()) != 0 {
+            anyhow::bail!("auto-build failed (build the circuit with `xark build` first)");
+        }
+        is_built = project.circuit_xbc().exists();
+    }
+    // A build older than its source: rebuild, so the proof is of the circuit as it
+    // is now (a key made for the old one then says to run `xark setup` again).
+    if is_built {
+        crate::cli::rebuild_if_stale(&project.xark_dir)?;
+    }
+    // If no crate dir is found, fall through: `load_r1cs` emits the usual
+    // clear "run `xark build` first" error.
+    if args.proving_key.is_none() && is_built && !pk_path.exists() {
+        project.may_make_key()?;
+        eprintln!(
+            "{} no proving key found — making one from this machine's randomness (`xark \
+             ceremony` makes one no single party has to be trusted for)…",
+            crate::style::tag()
+        );
+        // From this machine's randomness: the convenience loop must not silently run
+        // a phase-2 setup just because a stray `.ptau` is discoverable. A key from a
+        // transcript stays an explicit `xark setup`.
+        setup::run(setup::SetupArgs {
+            path: args.path.clone(),
+            out: None,
+            without_ptau: true,
+            deterministic_rng: None,
+            ptau_file: None,
+            phase2_seed: None,
+            uncompressed: false,
+            r1cs_form: setup::R1csForm::Auto,
+            domain: setup::QapDomain::Auto,
+        })?;
+    }
+    Ok(())
+}
+
+/// Best-effort locate the circuit crate directory (holding `Cargo.toml`) to
+/// auto-build: the crate the resolved output dir is under, else an explicit crate
+/// path, else the cwd, else walking up from the resolved output dir.
+fn find_crate_dir(args: &ProveArgs, project: &XarkProject) -> Option<PathBuf> {
+    // The crate the build output belongs to, first: at a project's root the path
+    // and the cwd hold the workspace's `Cargo.toml`, not the circuit's.
+    if let Some(krate) = project.crate_dir()
+        && krate.join("Cargo.toml").is_file()
+    {
+        return Some(krate);
+    }
+    // Try each source independently: an explicit crate path, then the cwd, then
+    // walking up from the resolved output dir. (Independent `if`s, not else-if,
+    // so an explicit *non-crate* path still falls back to cwd.)
+    if let Some(p) = &args.path
+        && p.join("Cargo.toml").is_file()
+    {
+        return Some(p.clone());
+    }
+    if let Ok(cwd) = std::env::current_dir()
+        && cwd.join("Cargo.toml").is_file()
+    {
+        return Some(cwd);
+    }
+    let mut d = project.xark_dir.clone();
+    while d.pop() {
+        if d.join("Cargo.toml").is_file() {
+            return Some(d);
+        }
+    }
+    None
+}
+
+/// Whether the `metadata.json` beside a proving key marks it production-safe.
+fn key_is_production_safe(pk_path: &std::path::Path) -> bool {
+    let Some(dir) = pk_path.parent() else {
+        return false;
+    };
+    fs::read_to_string(dir.join("metadata.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("production_safe").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}

@@ -1,0 +1,28 @@
+//! A product reused across two `require_eq`s must stay bound to `a*b` in BOTH:
+//! folding the product's defining row into the first would leave the second
+//! pinning a free witness, letting a prover pick `c != d`. Must enforce
+//! `a*b == c` AND `a*b == d` (hence `c == d`).
+
+use xark::{circuit, require_eq, Field, Private, Public};
+
+#[circuit]
+pub fn mul_reuse(a: Private<Field>, b: Private<Field>, c: Public<Field>, d: Public<Field>) {
+    let t = a * b;
+    require_eq(t, c);
+    require_eq(t, d);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mul_reuse;
+
+    #[test]
+    fn accepts_valid() {
+        mul_reuse(3, 4, 12, 12).unwrap();
+    }
+
+    #[test]
+    fn rejects_wrong() {
+        assert!(mul_reuse(3, 4, 12, 13).is_err());
+    }
+}

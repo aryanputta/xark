@@ -1,0 +1,26 @@
+[package]
+name = "xark-bignum"
+description = "Non-native (foreign-field) limb arithmetic for xark circuit gadgets."
+keywords = ["zero-knowledge", "zk", "cryptography", "circuit", "groth16"]
+categories = ["cryptography"]
+readme = "README.md"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+xark.workspace = true
+
+[dev-dependencies]
+xark-test-harness = { path = "../../crates/test-harness" }
+xark-ir = { path = "../../crates/ir" }
+num-bigint.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(xark)'] }

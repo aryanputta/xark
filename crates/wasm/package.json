@@ -1,0 +1,69 @@
+{
+  "name": "@blueshift-gg/xark",
+  "version": "0.5.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/blueshift-gg/xark.git",
+    "directory": "crates/wasm"
+  },
+  "main": "./dist/node/xark_wasm.js",
+  "types": "./dist/node/xark_wasm.d.ts",
+  "scripts": {
+    "test": "node --test tests/wasm-smoke.test.cjs tests/streaming.test.cjs tests/poseidon2.test.cjs"
+  },
+  "files": [
+    "dist/node/*",
+    "dist/web/*",
+    "dist/module/*",
+    "js/*"
+  ],
+  "exports": {
+    ".": {
+      "node": {
+        "types": "./dist/node/xark_wasm.d.ts",
+        "default": "./dist/node/xark_wasm.js"
+      },
+      "workerd": {
+        "types": "./dist/module/xark_wasm.d.ts",
+        "default": "./dist/module/xark_wasm.js"
+      },
+      "browser": {
+        "types": "./dist/web/xark_wasm.d.ts",
+        "default": "./dist/web/xark_wasm.js"
+      },
+      "default": {
+        "types": "./dist/web/xark_wasm.d.ts",
+        "default": "./dist/web/xark_wasm.js"
+      }
+    },
+    "./pool": {
+      "types": "./js/pool.d.ts",
+      "default": "./js/pool.mjs"
+    },
+    "./stream": {
+      "types": "./js/stream.d.ts",
+      "default": "./js/stream.mjs"
+    },
+    "./client": {
+      "types": "./js/client.d.ts",
+      "default": "./js/client.mjs"
+    },
+    "./testing": {
+      "types": "./js/testing.d.ts",
+      "default": "./js/testing.mjs"
+    }
+  },
+  "peerDependencies": {
+    "@solana/kit": ">=5",
+    "litesvm": ">=1"
+  },
+  "peerDependenciesMeta": {
+    "@solana/kit": {
+      "optional": true
+    },
+    "litesvm": {
+      "optional": true
+    }
+  }
+}

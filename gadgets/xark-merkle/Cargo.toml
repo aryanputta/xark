@@ -1,0 +1,29 @@
+[package]
+name = "xark-merkle"
+description = "Merkle trees for xark zero-knowledge circuits: membership, appends and non-membership."
+keywords = ["zero-knowledge", "zk", "cryptography", "circuit", "groth16"]
+categories = ["cryptography"]
+readme = "README.md"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "xark_merkle"
+path = "src/lib.rs"
+
+[dependencies]
+xark.workspace = true
+xark-poseidon.workspace = true
+xark-poseidon2.workspace = true
+
+[dev-dependencies]
+xark-test-harness = { path = "../../crates/test-harness" }
+xark-ir = { path = "../../crates/ir" }
+num-bigint = "0.4"
+
+[lints]
+workspace = true

@@ -1,0 +1,40 @@
+[package]
+name = "xark-ir"
+description = "xark's intermediate representation: R1CS constraints, linear combinations, and the primitive/hint program."
+keywords = ["zero-knowledge", "zk", "cryptography", "circuit", "groth16"]
+categories = ["cryptography"]
+readme = "README.md"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "xark_ir"
+path = "src/lib.rs"
+
+[features]
+# Opt-in developer diagnostics (timing eprintlns, minimizer fixpoint assertions,
+# `XARK_*` tuning knobs). A normal release build leaves this off and compiles the
+# env reads out entirely.
+debug = []
+
+# Parallel field arithmetic (ark-ff). Must be disabled in environments that
+# lacks threads
+parallel = ["ark-ff/parallel"]
+default = ["parallel"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+num-bigint = "0.4"
+num-traits = "0.2"
+rayon = "1"
+# Fast fixed-width BN254 scalar field (Montgomery) for the reference solver's
+# hot path; the `num-bigint` fallback stays for arbitrary-modulus programs.
+ark-bn254.workspace = true
+# parallel feature is enabled by default
+ark-ff = { version = "0.6", default-features = false, features = ["std"] }
+crypto-bigint = { version = "0.7", default-features = false }

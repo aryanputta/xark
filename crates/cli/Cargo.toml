@@ -1,0 +1,46 @@
+[package]
+name = "xark-cli"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Build, test, prove and verify zero-knowledge circuits written in Rust, and generate their Solana verifiers."
+keywords = ["zero-knowledge", "zk", "cryptography", "circuit", "groth16"]
+categories = ["cryptography"]
+readme = "README.md"
+
+# The toolchain: `cargo install xark-cli` → the `xark` CLI.
+[[bin]]
+name = "xark"
+path = "src/main.rs"
+
+[features]
+# Opt-in developer diagnostics — forwards to `xark-ir`/`xark-prover`'s `debug`.
+debug = ["xark-ir/debug", "xark-prover/debug"]
+# `xark prove --prover opencl`: needs an OpenCL runtime (and links its library).
+opencl = ["dep:xark-groth16-opencl"]
+
+[dependencies]
+xark-groth16-opencl = { workspace = true, optional = true }
+num-bigint = "0.4"
+xark-ir.workspace = true
+xark-prover.workspace = true
+xark-schema.workspace = true
+xark-backend.workspace = true
+xark-groth16.workspace = true
+xark-frontend.workspace = true
+serde_json = "1"
+toml_edit = "0.25"
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+anyhow = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sha2 = "0.11"
+hex = "0.4"
+rand = "0.8"
+rand_chacha = "0.3"
+ark-bn254 = { version = "0.6", default-features = false, features = ["curve"] }
+ark-serialize = { version = "0.6", default-features = false }
+mimalloc = "0.1"

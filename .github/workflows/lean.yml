@@ -1,0 +1,196 @@
+name: Lean (gadget soundness)
+
+# Builds the Lean 4 / mathlib proofs in `formal/`.
+# `lake build` type-checks every theorem; `formal/AxiomCheck.lean` then fails the job if a harness under
+# `formal/templates/` lacks its soundness theorem or constant-plug obligations, or if
+# any declaration in `Formal` depends on an axiom beyond `propext`, `Classical.choice`
+# and `Quot.sound` (a `sorry` is `sorryAx`, a declared `axiom`, `native_decide`, …), and
+# `formal/CircuitHash.lean` fails it unless each exported circuit's Lean composition
+# (`Formal/Circuits/`) has the rows the compiler emitted.
+# `templates` re-exports every proven gadget's R1CS (`cargo xtask lean-export --check`)
+# and fails if the code no longer emits what the proofs were checked against, then
+# checks every example's calls of those gadgets emit that R1CS (`--coverage`).
+# `minimize` runs the certified minimizer's Lean checker (`formal/MinimizeCheck.lean`) on
+# every minimizer run of every example's keyed rows, and its mutation test.
+
+on:
+  push:
+    branches: [master]
+  # A pull request that touches only what no proof reads skips the workflow: the
+  # jobs build xtask (xark-frontend, xark-ir), compile the gadgets and examples
+  # through it and check `formal/`, so the prover side, the clients, the test
+  # harness and the docs never reach them. This mirrors `affected` in
+  # `xtask/src/ci.rs`; a path added there belongs here too. master still runs it all.
+  pull_request:
+    paths:
+      - "**"
+      - "!**.md"
+      - "!docs/**"
+      - "!LICENSE*"
+      - "!.github/**"
+      - ".github/workflows/lean.yml"
+      - "!crates/backend/**"
+      - "!crates/cli/**"
+      - "!crates/groth16/**"
+      - "!crates/prover/**"
+      - "!crates/schema/**"
+      - "!crates/verifier/**"
+      - "!crates/wasm/**"
+      - "!crates/test-harness/**"
+      - "!clients/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  templates:
+    name: proven templates match the code
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Install rustc 1.99.1 + wasm32
+        # The keyed rows coverage compares with are pinned under this rustc
+        # (ci.yml's keyed-rows job).
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: xtask
+          cache-workspace-crates: true
+      - name: Re-export every proven gadget
+        run: cargo xtask lean-export --check
+
+  coverage:
+    # Builds every example with the gadget markers; a call whose rows aren't the
+    # proven template (alone or with constant plugs) fails unless
+    # formal/coverage-allowlist.txt gives a reason. One example at a time (the
+    # runner's memory holds one recorded build of the largest example), every
+    # fourth example per runner: 6 min on one. What needs every example at once (an
+    # allowlist entry or a committed obligation no example uses any more) is checked
+    # by the weekly full run (scheduled.yml) and `cargo xtask ci`.
+    name: every production call of a proven gadget emits its template (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Install rustc 1.99.1 + wasm32
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: xtask
+          cache-workspace-crates: true
+      - name: This shard's examples
+        run: cargo xtask lean-export --coverage --shard ${{ matrix.shard }}/4
+        env:
+          XARK_JOBS: 1
+
+  minimize:
+    name: keyed rows certified (minimizer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Install rustc 1.99.1 + wasm32
+        # The certified rows are compared with the keyed digests, pinned under this
+        # rustc (ci.yml's keyed-rows job).
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: xtask
+          cache-workspace-crates: true
+      - name: Install elan (Lean toolchain manager)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Every minimizer run of every example's keyed rows passes the Lean checker
+        # Builds every example; each template body's, the top stream's and the global
+        # pass's minimization must be accepted by `lake exe minimize_check`, and the
+        # certified rows must hash to tests/stable-digests.txt.
+        run: cargo xtask minimize-check
+      - name: A mutated minimizer is refused
+        run: cargo test -p xtask --release minimize_check -- --ignored
+
+  lean:
+    name: prove (gadget soundness)
+    runs-on: ubuntu-latest
+    # A clean build of the proofs took 19-32 min on a hosted runner when every module
+    # imported all of Mathlib; with narrow imports and the build cache below, far less.
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: formal
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Install elan (Lean toolchain manager)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Fetch mathlib cache
+        run: lake exe cache get
+      - name: Restore the proofs' build
+        # Lake checks each module by content hash, so a restored build skips every
+        # module whose source and imports are unchanged (the newest build of any
+        # source when this exact one isn't cached). Saved only from master, below:
+        # the repository's caches are capped at 10 GB and one per pull request
+        # evicted master's, so a pull request built the proofs from scratch.
+        uses: actions/cache/restore@v4
+        with:
+          path: formal/.lake/build
+          key: formal-${{ hashFiles('formal/lean-toolchain', 'formal/lake-manifest.json') }}-${{ hashFiles('formal/**/*.lean') }}
+          restore-keys: formal-${{ hashFiles('formal/lean-toolchain', 'formal/lake-manifest.json') }}-
+      - name: Build proofs
+        run: lake build
+      - name: Save the proofs' build
+        if: github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: formal/.lake/build
+          key: formal-${{ hashFiles('formal/lean-toolchain', 'formal/lake-manifest.json') }}-${{ hashFiles('formal/**/*.lean') }}
+      - name: Every harness proven; standard axioms only
+        run: lake env lean AxiomCheck.lean
+      - name: Each exported circuit's Lean rows hash to the compiler's
+        # `Formal/Circuits/<Example>.lean` composes an example from its gadget templates;
+        # its rows must hash to the hash `lean-export --example` took of the compiler's.
+        run: lake env lean CircuitHash.lean
+      - name: Install rustc 1.99.1 + wasm32
+        # The pinned rustc of ci.yml's keyed-rows job and the coverage job above.
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: xtask
+          cache-workspace-crates: true
+      - name: A mutated circuit is refused
+        working-directory: .
+        run: cargo test -p xtask --release lean::tests -- --ignored

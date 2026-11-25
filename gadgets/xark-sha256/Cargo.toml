@@ -1,0 +1,21 @@
+[package]
+name = "xark-sha256"
+description = "SHA-256 gadget for xark zero-knowledge circuits."
+keywords = ["zero-knowledge", "zk", "cryptography", "circuit", "groth16"]
+categories = ["cryptography"]
+readme = "README.md"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "xark_sha256"
+path = "src/lib.rs"
+
+[dependencies]
+xark.workspace = true
+xark-bits.workspace = true
+xark-hash.workspace = true

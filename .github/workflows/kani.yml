@@ -1,0 +1,173 @@
+name: Kani (formal verification)
+
+# Runs the Kani bounded model checker over the verifier's harnesses
+# (`#[cfg(kani)] mod proofs` in crates/verifier/src/verifier.rs). These
+# discharge, over *all* inputs:
+#   * `le_lt` is a correct 256-bit LE comparison,
+#   * `scalar_is_canonical(s) ⇔ s < r`,
+#   * `fq_is_canonical(c) ⇔ c < q`  (the non-malleability core),
+#   * `coords_canonical` = conjunction of the per-coordinate checks,
+#   * fail-closed structural / arity / non-malleability rejections,
+#   * **totality**: no panic / no OOB / no overflow over the full
+#     `verify_groth16` + `verify_proof_only` body (curve ops swapped via
+#     `kani::stub` since BN254 pairing/scalar-mul is not symbolically
+#     executable inside Kani's budget), and
+#   * pairing operand-assembly: the byte buffer presented to the
+#     `alt_bn128_pairing` syscall equals the canonical
+#     `neg(A) || B || α || β || vk_x || γ || C || δ`.
+
+on:
+  push:
+    branches: [master]
+  # The harnesses are `xark-verifier`'s, which depends on no other crate of the
+  # workspace, so a pull request runs them only when the verifier, the
+  # workspace's manifest, lock or cargo config, or this file change. master
+  # still runs them all.
+  pull_request:
+    paths:
+      - "crates/verifier/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - ".github/workflows/kani.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kani:
+    # The 32 harnesses in two shards (every other, by position in the list below):
+    # one runner took 6m44 for all of them; the account runs 20 jobs at once.
+    name: prove (verifier, shard ${{ matrix.shard }}/2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Replace default 4 GB swap with 12 GB
+        # `ubuntu-latest` has 7 GB RAM + a pre-mounted 4 GB `/swapfile`
+        # — combined ~11 GB virtual. CBMC's GOTO+SAT working set on the
+        # heavier rejection / totality harnesses (symbolic
+        # `verify_groth16` with kani::stub'd curve ops) spikes past that
+        # and the runner gets SIGTERM ("received a shutdown signal" /
+        # exit 143). Disable the existing swap, replace with 12 GB so
+        # the spike pages out instead of crashing.
+        run: |
+          sudo swapoff -a
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo fallocate -l 12G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore cargo and Kani
+        # Saved only from master (the last step): the repository's caches are
+        # capped at 10 GB, and one per pull request evicted master's.
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.kani
+            target
+          key: ${{ runner.os }}-kani-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-kani-
+
+      - name: Install Kani
+        # The action wrapper does this for us, but we need direct control
+        # over cargo-kani invocations to run each harness in its own
+        # process. The cargo install is fast on a warm cache.
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+
+      - name: Run each harness in its own cargo-kani process
+        # Why per-harness: passing all 32 harnesses to one cargo-kani
+        # invocation OOM-kills `ubuntu-latest` (7 GB) at ~10 harnesses
+        # because cargo-kani driver state grows monotonically. Sharding
+        # via `--harness` filters hit a Kani 0.67 bug where multi-flag
+        # invocations silently drop most filters — e.g. four `--exact
+        # --harness X --harness Y --harness Z --harness W` calls
+        # reproducibly matched only 0–2 of the four. One harness per
+        # cargo-kani call sidesteps both: memory is reclaimed between
+        # invocations and there's nothing for the filter logic to drop.
+        run: |
+          set -e
+          harnesses=(
+            verifier::proofs::le_lt_is_correct_u256_compare
+            verifier::proofs::scalar_is_canonical_iff_lt_r
+            verifier::proofs::fq_is_canonical_iff_lt_q
+            verifier::proofs::coords_canonical_is_conjunction
+            verifier::proofs::proof_wrong_length_rejected
+            verifier::proofs::vk_truncated_rejected
+            verifier::proofs::vk_ic_unaligned_rejected
+            verifier::proofs::pi_unaligned_rejected
+            verifier::proofs::arity_mismatch_rejected_ic2_pi0
+            verifier::proofs::arity_mismatch_rejected_ic2_pi2
+            verifier::proofs::noncanonical_pi_rejected
+            verifier::proofs::strict_rejects_top_bit_set_in_vk
+            verifier::proofs::strict_rejects_top_bit_set_in_proof
+            verifier::proofs::proof_only_too_short_rejected
+            verifier::proofs::pairing_operand_assembly_order
+            verifier::proofs::pairing_operand_assembly
+            verifier::proofs::verify_groth16_totality_n0
+            verifier::proofs::verify_groth16_totality_n1
+            verifier::proofs::verify_groth16_totality_n2
+            verifier::proofs::verify_groth16_strict_totality_n0
+            verifier::proofs::verify_groth16_strict_totality_n1
+            verifier::proofs::verify_groth16_strict_totality_n2
+            verifier::proofs::totality_verify_groth16
+            verifier::proofs::totality_verify_proof_only
+            verifier::proofs::small_scalar_is_exact_and_budgeted
+            verifier::proofs::batch_empty_rejected
+            verifier::proofs::batch_partial_entry_rejected
+            verifier::proofs::batch_scratch_too_small_rejected
+            verifier::proofs::totality_verify_groth16_batch
+            verifier::proofs::totality_verify_groth16_batch_m1
+            verifier::proofs::totality_verify_groth16_batch_n0
+            verifier::proofs::add_mod_r_is_mod_add
+          )
+          failed=()
+          i=-1
+          for h in "${harnesses[@]}"; do
+            i=$((i + 1))
+            if [ $((i % 2)) -ne ${{ matrix.shard }} ]; then
+              continue
+            fi
+            echo "::group::Kani harness: $h"
+            if cargo-kani -p xark-verifier -Z stubbing --exact --harness "$h"; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::Kani harness failed: $h"
+              failed+=("$h")
+            fi
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::${#failed[@]} harness(es) failed:"
+            printf '  - %s\n' "${failed[@]}"
+            exit 1
+          fi
+          echo "This shard's Kani harnesses verified."
+
+      - name: Save cargo and Kani
+        if: github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.kani
+            target
+          key: ${{ runner.os }}-kani-${{ hashFiles('Cargo.lock') }}

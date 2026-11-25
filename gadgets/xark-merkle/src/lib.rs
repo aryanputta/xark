@@ -1,0 +1,78 @@
+//! `xark-merkle`: in-circuit Merkle-tree membership verification.
+//!
+//! [`merkle_root`] folds an authentication path (`siblings`, leaf level first)
+//! with the leaf position (`index_bits`, LSB-first: `0` = left child, `1` =
+//! right child) through the Poseidon 2-to-1 compression ([`xark_poseidon::hash2`])
+//! and returns the root. [`merkle_verify`] additionally asserts it equals an
+//! expected root.
+//!
+//! Soundness: each level orders its pair with [`cond_swap`], which constrains
+//! `index_bits[i]` boolean (`b·b == b`) itself, so a prover cannot smuggle a
+//! non-`{0,1}` selector; the final `require_eq` pins the fold to the claimed root.
+//!
+//! [`poseidon2`] is the same tree over Poseidon2, with appends and an indexed tree
+//! for non-membership; [`tree`] builds either tree's roots and paths on the host.
+#![no_std]
+
+#[cfg(not(xark))]
+extern crate alloc;
+
+pub mod poseidon2;
+#[cfg(not(xark))]
+pub mod tree;
+
+use xark::{Field, gadget, require_eq};
+use xark_poseidon::hash2;
+
+/// `bit ? (b, a) : (a, b)`, with `bit` constrained boolean: one booleanity row and
+/// one product, `a' = a + bit·(b − a)`, `b' = a + b − a'` (halo2's `cond_swap`,
+/// <https://github.com/zcash/halo2/blob/3442dd33754ae0d44b8970e5a4eea79b0c3360bf/halo2_gadgets/src/utilities/cond_swap.rs#L256-L284>).
+/// The rows it emits on fresh inputs are proven sound and complete in
+/// `formal/Formal/CondSwap.lean` (`cargo xtask lean-export cond_swap`).
+#[gadget]
+pub fn cond_swap(bit: Field, a: Field, b: Field) -> (Field, Field) {
+    bit.require_bool();
+    let swapped_a = a + bit * (b - a);
+    (swapped_a, a + b - swapped_a)
+}
+
+/// Fold an authentication path to its Merkle root.
+///
+/// `siblings[i]` is the sibling hash and `index_bits[i]` the position bit at
+/// level `i` (`0` = running node is left child, `1` = right). Each bit is
+/// boolean-constrained by [`cond_swap`]. Returns the computed root (use
+/// [`merkle_verify`] for the common equality check).
+pub fn merkle_root<const DEPTH: usize>(
+    leaf: Field,
+    siblings: [Field; DEPTH],
+    index_bits: [Field; DEPTH],
+) -> Field {
+    let mut node = leaf;
+    let mut i = 0usize;
+    while i < DEPTH {
+        // bit selects child order: 0 → (node, sib), 1 → (sib, node).
+        let (left, right) = cond_swap(index_bits[i], node, siblings[i]);
+        node = hash2(left, right);
+        i += 1;
+    }
+    node
+}
+
+/// Assert `leaf` is a member of the Merkle tree with the given `root`, at the
+/// position encoded by `index_bits`, with authentication path `siblings`.
+/// Emits [`merkle_root`]'s constraints plus one equality against `root`.
+pub fn merkle_verify<const DEPTH: usize>(
+    leaf: Field,
+    siblings: [Field; DEPTH],
+    index_bits: [Field; DEPTH],
+    root: Field,
+) {
+    require_eq(merkle_root::<DEPTH>(leaf, siblings, index_bits), root);
+}
+
+/// Gadget API plus the xark circuit essentials, for a single
+/// `use xark_merkle::prelude::*;`.
+pub mod prelude {
+    pub use crate::{merkle_root, merkle_verify};
+    pub use xark::prelude::*;
+}
