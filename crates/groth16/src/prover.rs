@@ -13,6 +13,8 @@
 //! A key already in memory ([`PkSource::resident`]) needs no order: its five MSMs
 //! and the quotient run side by side.
 
+use std::time::{Duration, Instant};
+
 use crate::types::Proof;
 use ark_bn254::{Bn254, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
 use ark_ec::CurveGroup;
@@ -127,12 +129,42 @@ impl From<PkError> for ProveError {
     }
 }
 
+/// Optional timing hook for overlapping tasks in the split resident CPU prover.
+pub type ResidentTimingSink<'a> = dyn Fn(&'static str, Instant, Duration) + Sync + 'a;
+
 /// Phase hook for instrumentation (timing / peak-memory sampling).
 pub trait Probe {
     fn mark(&mut self, _phase: &'static str) {}
+
+    /// Receive wall-clock spans for split resident CPU tasks. Spans may overlap.
+    fn resident_timings(&self) -> Option<&ResidentTimingSink<'_>> {
+        None
+    }
 }
 
 impl Probe for () {}
+
+struct ResidentProbe<'a>(Option<&'a ResidentTimingSink<'a>>);
+
+impl Probe for ResidentProbe<'_> {
+    fn resident_timings(&self) -> Option<&ResidentTimingSink<'_>> {
+        self.0
+    }
+}
+
+pub(crate) fn time_resident<T>(
+    timings: Option<&ResidentTimingSink<'_>>,
+    phase: &'static str,
+    work: impl FnOnce() -> T,
+) -> T {
+    let Some(record) = timings else {
+        return work();
+    };
+    let start = Instant::now();
+    let result = work();
+    record(phase, start, start.elapsed());
+    result
+}
 
 /// Check the key's vector lengths against the constraint source (the ordering
 /// contract's first line of defence).
@@ -599,19 +631,42 @@ where
         let key = pk.resident().expect("checked above");
         let (mut a, mut b1, mut b2, mut l) = (None, None, None, None);
         let mut h = None;
+        let timings = probe.resident_timings();
         rayon::scope(|sc| {
             sc.spawn(|_| {
                 h = Some(
-                    quotient_for(src, z, &dom, cfg, &mut Local, &mut ())
-                        .map(|h| resident_msm(&key.h_query, chunk, &|off, len| h.chunk(off, len))),
-                )
+                    time_resident(timings, "quotient", || {
+                        quotient_for(src, z, &dom, cfg, &mut Local, &mut ResidentProbe(timings))
+                    })
+                    .map(|h| {
+                        time_resident(timings, "msm_h", || {
+                            resident_msm(&key.h_query, chunk, &|off, len| h.chunk(off, len))
+                        })
+                    }),
+                );
             });
-            sc.spawn(|_| a = Some(resident_msm(&key.a_query, chunk, &z_sc)));
+            sc.spawn(|_| {
+                a = Some(time_resident(timings, "msm_a", || {
+                    resident_msm(&key.a_query, chunk, &z_sc)
+                }));
+            });
             if !r.is_zero() {
-                sc.spawn(|_| b1 = Some(resident_msm(&key.b_g1_query, chunk, &z_sc)));
+                sc.spawn(|_| {
+                    b1 = Some(time_resident(timings, "msm_b1", || {
+                        resident_msm(&key.b_g1_query, chunk, &z_sc)
+                    }));
+                });
             }
-            sc.spawn(|_| b2 = Some(resident_msm(&key.b_g2_query, chunk, &z_sc)));
-            sc.spawn(|_| l = Some(resident_msm(&key.l_query, chunk, &aux_sc)));
+            sc.spawn(|_| {
+                b2 = Some(time_resident(timings, "msm_b2", || {
+                    resident_msm(&key.b_g2_query, chunk, &z_sc)
+                }));
+            });
+            sc.spawn(|_| {
+                l = Some(time_resident(timings, "msm_l", || {
+                    resident_msm(&key.l_query, chunk, &aux_sc)
+                }));
+            });
             if cfg.self_check {
                 sc.spawn(|_| prep = Some(Prepared::new(&hdr.vk, &z[1..ninst])));
             }
