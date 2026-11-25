@@ -9,6 +9,7 @@
 //! bench_prove ark    <circuit.xbc> <pk.bin> <inputs.json> [--reduced]
 //! bench_prove stream <circuit.xbc> <pk.bin> <inputs.json> [--source xbc|min] [--tile N] [--chunk N]
 //! BENCH_TIME=1 bench_prove warm <circuit.xbc> <reduced pk.bin> <inputs.json> [proofs] [warmups]
+//! BENCH_TIME=1 bench_prove query-msm <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! ```
 //! `--reduced` / `--source xbc` prove the template-reduced circuit (key from
 //! `setup-reduced`); otherwise the boundary-minimized circuit `xark setup` keys.
@@ -24,6 +25,11 @@
 //! Use it with `BENCH_TIME=1 BENCH_WARM_BACKEND=cpu` and an SDK statement directory.
 //! For either Privacy Rings timelock fixture, set `BENCH_PUBLIC_STATEMENTS` to
 //! the directory containing `public.json` and `public-changed.json`.
+//! `query-msm` takes that directory as an argument and times the decoded B1
+//! and B2 queries in isolation. It alternates backend order and checks every
+//! group result against Arkworks before reporting timings. Use
+//! `RAYON_NUM_THREADS` to set the shared worker budget and `NO_GLV=1` to
+//! disable GLV for Xark's query benchmark.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
@@ -50,6 +56,8 @@ mod ark;
 mod arkworks_prover;
 #[path = "support/iden3.rs"]
 mod iden3;
+#[path = "support/query_msm.rs"]
+mod query_msm;
 use ark::{ArkCircuit, convert};
 use arkworks_prover::Arkworks;
 
@@ -281,12 +289,11 @@ fn public_hash(path: &std::path::Path) -> Fr {
 fn check_statements(directory: &std::path::Path, actual: &[Fr]) -> Fr {
     let expected = public_hash(&directory.join("public.json"));
     let changed = public_hash(&directory.join("public-changed.json"));
-    assert_eq!(
-        actual,
-        [expected],
+    assert!(
+        actual == [expected],
         "witness public input does not match the fixture statement"
     );
-    assert_ne!(expected, changed, "changed statement must differ");
+    assert!(expected != changed, "changed statement must differ");
     changed
 }
 
@@ -309,6 +316,10 @@ fn main() {
     }
     let args: Vec<String> = std::env::args().collect();
     let mode = args[1].as_str();
+    if mode == "query-msm" {
+        query_msm::run(&args[2..]);
+        return;
+    }
     let xbc = std::fs::read(&args[2]).unwrap();
     if mode == "check-witness" || mode == "export-iden3" {
         let directory = std::path::Path::new(&args[3]);
