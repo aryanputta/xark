@@ -3,6 +3,8 @@
 //!
 //! ```text
 //! bench_prove counts <circuit.xbc>                         # inspect before generating keys
+//! bench_prove check-witness <circuit.xbc> <statement-dir> # check the solved public input
+//! bench_prove export-iden3 <circuit.xbc> <statement-dir> <new-directory>
 //! bench_prove setup-reduced <circuit.xbc> <out pk.bin>     # key the template-reduced circuit
 //! bench_prove ark    <circuit.xbc> <pk.bin> <inputs.json> [--reduced]
 //! bench_prove stream <circuit.xbc> <pk.bin> <inputs.json> [--source xbc|min] [--tile N] [--chunk N]
@@ -15,9 +17,9 @@
 //! For a controlled CPU comparison, set `BENCH_MERGE_BELOW=0` to disable merging.
 //! Set `BENCH_WARM_BACKEND=cpu` to time Xark alone while still checking each
 //! proof with Arkworks. The default times both prover adapters.
-//! For the Privacy Rings escrow or withdrawal fixture, set
-//! `BENCH_PUBLIC_STATEMENTS` to the directory containing `public.json` and
-//! `public-changed.json`.
+//! `BENCH_CHECK_ROWS=1` includes witness row checks in warm timing for Gnark.
+//! For either Privacy Rings timelock fixture, set `BENCH_PUBLIC_STATEMENTS` to
+//! the directory containing `public.json` and `public-changed.json`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
@@ -41,6 +43,8 @@ use xark_prover::XarkCircuit;
 mod ark;
 #[path = "../tests/support/arkworks_prover.rs"]
 mod arkworks_prover;
+#[path = "support/iden3.rs"]
+mod iden3;
 use ark::{ArkCircuit, convert};
 use arkworks_prover::Arkworks;
 
@@ -201,20 +205,28 @@ fn reduced(xbc: &[u8]) -> xark_ir::R1csProgram {
         .into_r1cs()
 }
 
-fn privacy_rings_public_hash(path: &std::path::Path) -> Fr {
-    let bytes = std::fs::read(path).expect("read Privacy Rings public statement");
+fn public_hash(path: &std::path::Path) -> Fr {
+    let bytes = std::fs::read(path).expect("read public statement");
     let statement: BTreeMap<String, String> =
-        serde_json::from_slice(&bytes).expect("decode Privacy Rings public statement");
-    assert_eq!(
-        statement.len(),
-        1,
-        "Privacy Rings must have one public input"
-    );
+        serde_json::from_slice(&bytes).expect("decode public statement");
+    assert_eq!(statement.len(), 1, "expected one public input");
     statement
         .get("public_hash")
-        .expect("Privacy Rings statement must contain public_hash")
+        .expect("statement must contain public_hash")
         .parse()
         .expect("parse public_hash as a field element")
+}
+
+fn check_statements(directory: &std::path::Path, actual: &[Fr]) -> Fr {
+    let expected = public_hash(&directory.join("public.json"));
+    let changed = public_hash(&directory.join("public-changed.json"));
+    assert_eq!(
+        actual,
+        [expected],
+        "witness public input does not match the fixture statement"
+    );
+    assert_ne!(expected, changed, "changed statement must differ");
+    changed
 }
 
 fn checked_arkworks_encoding<A: CanonicalSerialize, B: CanonicalDeserialize>(value: &A) -> B {
@@ -237,6 +249,26 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args[1].as_str();
     let xbc = std::fs::read(&args[2]).unwrap();
+    if mode == "check-witness" || mode == "export-iden3" {
+        let directory = std::path::Path::new(&args[3]);
+        let inputs = directory.join("inputs.json");
+        let assign = solve(&xbc, inputs.to_str().expect("UTF-8 input file path"));
+        let src = BytecodeSource::new(&xbc).unwrap();
+        let z = src.layout().assignment_from_map(&assign);
+        check_statements(directory, &z[1..src.layout().num_instance()]);
+        if mode == "export-iden3" {
+            iden3::write(std::path::Path::new(&args[4]), &src, &z)
+                .expect("export the reduced circuit and witness");
+            println!(
+                "exported reduced iden3 circuit: {} rows, {} wires, {} public inputs",
+                src.num_constraints(),
+                src.layout().num_vars(),
+                src.layout().num_instance() - 1
+            );
+        }
+        println!("fixture witness matches public statement");
+        return;
+    }
     if mode == "counts" {
         let r = reduced(&xbc);
         let m = XarkCircuit::for_setup(r.clone()).prog().clone();
@@ -374,21 +406,7 @@ fn main() {
         );
         let changed_public_hash = std::env::var_os("BENCH_PUBLIC_STATEMENTS")
             .or_else(|| std::env::var_os("BENCH_ESCROW_STATEMENTS"))
-            .map(|directory| {
-                let directory = std::path::PathBuf::from(directory);
-                let expected = privacy_rings_public_hash(&directory.join("public.json"));
-                let changed = privacy_rings_public_hash(&directory.join("public-changed.json"));
-                assert_eq!(
-                    public,
-                    [expected],
-                    "witness public input does not match the Privacy Rings statement"
-                );
-                assert_ne!(
-                    expected, changed,
-                    "changed Privacy Rings statement must differ"
-                );
-                changed
-            });
+            .map(|directory| check_statements(std::path::Path::new(&directory), public));
         let vk: ark_groth16::VerifyingKey<Bn254> = checked_arkworks_encoding(&pk.vk);
         let prepared_vk = Groth16::<Bn254>::process_vk(&vk).expect("prepare Arkworks key");
         let mut cfg = ProverConfig::default();
@@ -418,15 +436,27 @@ fn main() {
         // other's: a millisecond proof right after an arkworks one measures the
         // arkworks proof's cache and pool aftermath too.
         let mut rng = rand::thread_rng();
+        let check_rows = std::env::var_os("BENCH_CHECK_ROWS").is_some();
+        let check_witness = || {
+            if check_rows {
+                assert!(
+                    xark_groth16::r1cs::first_unsatisfied(&src, &z).is_none(),
+                    "the supplied witness fails a constraint"
+                );
+            }
+        };
+        eprintln!("resident includes row checks: {check_rows}");
         let samples: Vec<_> = provers
             .iter_mut()
             .map(|p| {
                 for _ in 0..warmups {
+                    check_witness();
                     prove_with_rng(&mut **p, &src, &z, &mut rng).expect("warm up prover");
                 }
                 (0..runs)
                     .map(|_| {
                         let t = Instant::now();
+                        check_witness();
                         let proof =
                             prove_with_rng(&mut **p, &src, &z, &mut rng).expect("measure proof");
                         (t.elapsed().as_secs_f64(), proof)
@@ -467,6 +497,9 @@ fn main() {
                     );
                 }
             }
+        }
+        if changed_public_hash.is_some() {
+            println!("changed statement rejected by Arkworks and Xark for each backend");
         }
         for i in 0..runs {
             let line: Vec<String> = provers
