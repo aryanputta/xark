@@ -321,14 +321,21 @@ fn main() {
     }
     if mode == "warm" {
         // Key already resident (prove-many server): prove time only, every prover,
-        // a line a proof: `warm <xbc> <pk> <inputs> [proofs, 3 by default]`.
-        let runs: u64 = args
+        // a line a proof: `warm <xbc> <pk> <inputs> [proofs] [warmups]`.
+        let runs: usize = args
             .get(5)
-            .map_or(3, |n| n.parse().expect("a number of proofs"));
+            .map_or(30, |n| n.parse().expect("a number of proofs"));
+        let warmups: usize = args
+            .get(6)
+            .map_or(3, |n| n.parse().expect("a number of warmups"));
+        assert!(runs > 0, "warm mode requires at least one measured proof");
         let assign = solve(&xbc, &args[4]);
         let pk = xark_backend::Groth16Keys::read_proving_key(&pk_path).unwrap();
         let src = BytecodeSource::new(&xbc).unwrap();
         let z = src.layout().assignment_from_map(&assign);
+        let public = &z[1..src.layout().num_instance()];
+        let vk: ark_groth16::VerifyingKey<Bn254> = convert(&pk.vk);
+        let prepared_vk = Groth16::<Bn254>::process_vk(&vk).expect("prepare Arkworks key");
         let mut provers: Vec<Box<dyn Prover + '_>> = vec![
             Box::new(Arkworks::new(&pk)),
             Box::new(Cpu::new(
@@ -340,24 +347,44 @@ fn main() {
         // (and as gnark's benchmark times its own), not one interleaved with the
         // other's: a millisecond proof right after an arkworks one measures the
         // arkworks proof's cache and pool aftermath too.
-        let times: Vec<Vec<f64>> = provers
+        let mut rng = rand::thread_rng();
+        let samples: Vec<_> = provers
             .iter_mut()
             .map(|p| {
+                for _ in 0..warmups {
+                    prove_with_rng(&mut **p, &src, &z, &mut rng).expect("warm up prover");
+                }
                 (0..runs)
-                    .map(|i| {
+                    .map(|_| {
                         let t = Instant::now();
-                        prove_with_rng(&mut **p, &src, &z, &mut ChaCha20Rng::seed_from_u64(i))
-                            .unwrap();
-                        t.elapsed().as_secs_f64()
+                        let proof =
+                            prove_with_rng(&mut **p, &src, &z, &mut rng).expect("measure proof");
+                        (t.elapsed().as_secs_f64(), proof)
                     })
-                    .collect()
+                    .collect::<Vec<_>>()
             })
             .collect();
-        for i in 0..runs as usize {
+        // Verify after all timed batches so pairings cannot affect the samples.
+        // Reject the batch before printing any timings if any proof fails.
+        for (prover, batch) in provers.iter().zip(&samples) {
+            for (index, (_, proof)) in batch.iter().enumerate() {
+                let proof: ark_groth16::Proof<Bn254> = convert(proof);
+                let valid =
+                    Groth16::<Bn254>::verify_with_processed_vk(&prepared_vk, public, &proof)
+                        .expect("verify measured proof with Arkworks");
+                assert!(
+                    valid,
+                    "{} proof {} failed verification",
+                    prover.name(),
+                    index + 1
+                );
+            }
+        }
+        for i in 0..runs {
             let line: Vec<String> = provers
                 .iter()
-                .zip(&times)
-                .map(|(p, t)| format!("{} {:.6}s", p.name(), t[i]))
+                .zip(&samples)
+                .map(|(p, batch)| format!("{} {:.6}s", p.name(), batch[i].0))
                 .collect();
             println!("warm prove: {}", line.join("  "));
         }
