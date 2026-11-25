@@ -12,6 +12,8 @@
 //! `warm` also uses a key from `setup-reduced`. It times resident prover adapter
 //! calls with witness solving and independent verification outside the samples.
 //! For a controlled CPU comparison, set `BENCH_MERGE_BELOW=0` to disable merging.
+//! For the Privacy Rings escrow fixture, set `BENCH_ESCROW_STATEMENTS` to
+//! the directory containing `public.json` and `public-changed.json`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
@@ -195,6 +197,18 @@ fn reduced(xbc: &[u8]) -> xark_ir::R1csProgram {
         .into_r1cs()
 }
 
+fn escrow_public_hash(path: &std::path::Path) -> Fr {
+    let bytes = std::fs::read(path).expect("read escrow public statement");
+    let statement: BTreeMap<String, String> =
+        serde_json::from_slice(&bytes).expect("decode escrow public statement");
+    assert_eq!(statement.len(), 1, "escrow must have one public input");
+    statement
+        .get("public_hash")
+        .expect("escrow statement must contain public_hash")
+        .parse()
+        .expect("parse escrow public_hash as a field element")
+}
+
 fn main() {
     // Must be decided before any allocation is tracked (CUR would underflow if
     // tracking switched off/on mid-run).
@@ -343,6 +357,18 @@ fn main() {
             public.len() + 1,
             "verifying key and circuit have different public input counts"
         );
+        let changed_public_hash = std::env::var_os("BENCH_ESCROW_STATEMENTS").map(|directory| {
+            let directory = std::path::PathBuf::from(directory);
+            let expected = escrow_public_hash(&directory.join("public.json"));
+            let changed = escrow_public_hash(&directory.join("public-changed.json"));
+            assert_eq!(
+                public,
+                [expected],
+                "witness public input does not match the escrow statement"
+            );
+            assert_ne!(expected, changed, "changed escrow statement must differ");
+            changed
+        });
         let vk: ark_groth16::VerifyingKey<Bn254> = convert(&pk.vk);
         let prepared_vk = Groth16::<Bn254>::process_vk(&vk).expect("prepare Arkworks key");
         let mut cfg = ProverConfig::default();
@@ -397,6 +423,19 @@ fn main() {
                     prover.name(),
                     index + 1
                 );
+                if let Some(changed) = changed_public_hash.as_ref().filter(|_| index == 0) {
+                    let accepts_changed = Groth16::<Bn254>::verify_with_processed_vk(
+                        &prepared_vk,
+                        std::slice::from_ref(changed),
+                        &proof,
+                    )
+                    .expect("verify changed escrow statement with Arkworks");
+                    assert!(
+                        !accepts_changed,
+                        "{} proof accepted under changed escrow statement",
+                        prover.name()
+                    );
+                }
             }
         }
         for i in 0..runs {
