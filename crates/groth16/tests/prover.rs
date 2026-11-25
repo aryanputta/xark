@@ -311,6 +311,70 @@ fn serialized_pk_rejects_vector_lengths_that_overflow_byte_offsets() {
 }
 
 #[test]
+fn split_resident_timing_keeps_the_proof_and_reports_tasks() {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    use xark_groth16::prover::ResidentTimingSink;
+
+    struct Timings<'a>(&'a ResidentTimingSink<'a>);
+
+    impl xark_groth16::Probe for Timings<'_> {
+        fn resident_timings(&self) -> Option<&ResidentTimingSink<'_>> {
+            Some(self.0)
+        }
+    }
+
+    let (prog, assign) = random_program(92, 60);
+    let circ = XarkCircuit::for_proving_preminimized(prog.clone(), assign.clone());
+    let (pk, _) =
+        ArkG16::circuit_specific_setup(circ, &mut ChaCha20Rng::seed_from_u64(92)).unwrap();
+    let src = ProgramSource::new(&prog);
+    let z = src.layout().assignment_from_map(&assign);
+    let cfg = ProverConfig {
+        merge_below: 0,
+        ..ProverConfig::default()
+    };
+    let (r, s) = (Fr::from(11u64), Fr::from(13u64));
+    let run = |probe: &mut dyn xark_groth16::Probe| {
+        xark_groth16::prove_with_randomness(&src, &z, &mut InMemoryPk::new(&pk), r, s, &cfg, probe)
+            .unwrap()
+    };
+    let expected = run(&mut ());
+    let events = Mutex::new(Vec::new());
+    let origin = Instant::now();
+    let record = |phase, start: Instant, elapsed: Duration| {
+        assert!(start >= origin);
+        events.lock().unwrap().push((phase, start + elapsed));
+    };
+    assert_eq!(run(&mut Timings(&record)), expected);
+    let end = Instant::now();
+    let mut names: Vec<_> = events
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .map(|(phase, finished)| {
+            assert!(finished <= end);
+            phase
+        })
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        [
+            "msm_a",
+            "msm_b1",
+            "msm_b2",
+            "msm_h",
+            "msm_l",
+            "qap_eval_ab",
+            "qap_fft_forward",
+            "qap_fft_inverse",
+            "quotient",
+        ]
+    );
+}
+
+#[test]
 fn proof_is_byte_identical_to_arkworks_and_verifies() {
     for seed in 20..24u64 {
         let (prog, assign) = random_program(seed, 60 + 33 * (seed as usize - 20));

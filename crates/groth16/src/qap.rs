@@ -19,6 +19,7 @@ use rayon::prelude::*;
 use crate::accel::{Accelerator, Local};
 use crate::fft::{Domain, FftConfig};
 use crate::msm::Scalar;
+use crate::prover::time_resident;
 use crate::r1cs::{ConstraintSource, eval_rows};
 use crate::spill::Spill;
 
@@ -173,12 +174,14 @@ pub fn quotient<S: ConstraintSource + ?Sized>(
         }
         None => {
             let mut b = vec![Fr::zero(); dom.n];
-            eval_rows(
-                src,
-                z,
-                rows_per_window,
-                [Some(&mut a[..m]), Some(&mut b[..m]), None],
-            );
+            time_resident(probe.resident_timings(), "qap_eval_ab", || {
+                eval_rows(
+                    src,
+                    z,
+                    rows_per_window,
+                    [Some(&mut a[..m]), Some(&mut b[..m]), None],
+                );
+            });
             probe.mark("qap_rows");
             a[m..m + ninst].copy_from_slice(&z[..ninst]);
             // A witness that satisfies the rows has ⟨C_i,z⟩ = ⟨A_i,z⟩·⟨B_i,z⟩ (and
@@ -196,11 +199,14 @@ pub fn quotient<S: ConstraintSource + ?Sized>(
                     .map(|(x, y)| *x * y)
                     .collect()
             });
-            let offloaded = accel.to_coset(dom, &mut a);
-            if !offloaded {
-                dom.to_coset(&mut a, Fr::GENERATOR);
-            }
-            to_coset(dom, &mut b, accel);
+            let offloaded = time_resident(probe.resident_timings(), "qap_fft_forward", || {
+                let offloaded = accel.to_coset(dom, &mut a);
+                if !offloaded {
+                    dom.to_coset(&mut a, Fr::GENERATOR);
+                }
+                to_coset(dom, &mut b, accel);
+                offloaded
+            });
             probe.mark("qap_fft");
             a.par_iter_mut()
                 .with_min_len(MIN_LEN)
@@ -209,7 +215,9 @@ pub fn quotient<S: ConstraintSource + ?Sized>(
             drop(b);
             let mut c = c_early.unwrap_or_else(|| {
                 let mut c = vec![Fr::zero(); dom.n];
-                eval_rows(src, z, rows_per_window, [None, None, Some(&mut c[..m])]);
+                time_resident(probe.resident_timings(), "qap_eval_c", || {
+                    eval_rows(src, z, rows_per_window, [None, None, Some(&mut c[..m])]);
+                });
                 c
             });
             probe.mark("qap_rows");
@@ -217,8 +225,10 @@ pub fn quotient<S: ConstraintSource + ?Sized>(
                 // The coset iFFT is linear and undoes C's coset FFT, so
                 // h = (coset_iFFT(A·B) − iFFT(C)) / Z(g): C takes one transform
                 // instead of two, the same field elements as the path below.
-                dom.from_coset_to_t(&mut a, Fr::GENERATOR.inverse().unwrap());
-                dom.ifft_to_t(&mut c);
+                time_resident(probe.resident_timings(), "qap_fft_inverse", || {
+                    dom.from_coset_to_t(&mut a, Fr::GENERATOR.inverse().unwrap());
+                    dom.ifft_to_t(&mut c);
+                });
                 a.par_iter_mut()
                     .with_min_len(MIN_LEN)
                     .zip(c.par_iter())
