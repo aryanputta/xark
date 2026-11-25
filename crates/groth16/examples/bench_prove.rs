@@ -5,9 +5,13 @@
 //! bench_prove setup-reduced <circuit.xbc> <out pk.bin>     # key the template-reduced circuit
 //! bench_prove ark    <circuit.xbc> <pk.bin> <inputs.json> [--reduced]
 //! bench_prove stream <circuit.xbc> <pk.bin> <inputs.json> [--source xbc|min] [--tile N] [--chunk N]
+//! BENCH_TIME=1 bench_prove warm <circuit.xbc> <reduced pk.bin> <inputs.json> [proofs] [warmups]
 //! ```
 //! `--reduced` / `--source xbc` prove the template-reduced circuit (key from
 //! `setup-reduced`); otherwise the boundary-minimized circuit `xark setup` keys.
+//! `warm` also uses a key from `setup-reduced`. It times resident prover adapter
+//! calls with witness solving and independent verification outside the samples.
+//! For a controlled CPU comparison, set `BENCH_MERGE_BELOW=0` to disable merging.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
@@ -334,14 +338,29 @@ fn main() {
         let src = BytecodeSource::new(&xbc).unwrap();
         let z = src.layout().assignment_from_map(&assign);
         let public = &z[1..src.layout().num_instance()];
+        assert_eq!(
+            pk.vk.gamma_abc_g1.len(),
+            public.len() + 1,
+            "verifying key and circuit have different public input counts"
+        );
         let vk: ark_groth16::VerifyingKey<Bn254> = convert(&pk.vk);
         let prepared_vk = Groth16::<Bn254>::process_vk(&vk).expect("prepare Arkworks key");
+        let mut cfg = ProverConfig::default();
+        if let Some(value) = std::env::var_os("BENCH_MERGE_BELOW") {
+            cfg.merge_below = value
+                .to_str()
+                .and_then(|value| value.parse().ok())
+                .expect("BENCH_MERGE_BELOW must be a nonnegative integer");
+        }
+        eprintln!(
+            "resident CPU: a_query_len={} merge_below={} merged={}",
+            pk.a_query.len(),
+            cfg.merge_below,
+            pk.a_query.len() < cfg.merge_below
+        );
         let mut provers: Vec<Box<dyn Prover + '_>> = vec![
             Box::new(Arkworks::new(&pk)),
-            Box::new(Cpu::new(
-                xark_groth16::InMemoryPk::new(&pk),
-                ProverConfig::default(),
-            )),
+            Box::new(Cpu::new(xark_groth16::InMemoryPk::new(&pk), cfg)),
         ];
         // Each prover's proofs back to back, as a prove-many server makes them
         // (and as gnark's benchmark times its own), not one interleaved with the
