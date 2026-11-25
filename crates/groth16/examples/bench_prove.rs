@@ -2,6 +2,7 @@
 //! peak-heap-tracking allocator so every phase reports its own high-water mark.
 //!
 //! ```text
+//! bench_prove counts <circuit.xbc>                         # inspect before generating keys
 //! bench_prove setup-reduced <circuit.xbc> <out pk.bin>     # key the template-reduced circuit
 //! bench_prove ark    <circuit.xbc> <pk.bin> <inputs.json> [--reduced]
 //! bench_prove stream <circuit.xbc> <pk.bin> <inputs.json> [--source xbc|min] [--tile N] [--chunk N]
@@ -12,6 +13,8 @@
 //! `warm` also uses a key from `setup-reduced`. It times resident prover adapter
 //! calls with witness solving and independent verification outside the samples.
 //! For a controlled CPU comparison, set `BENCH_MERGE_BELOW=0` to disable merging.
+//! Set `BENCH_WARM_BACKEND=cpu` to time Xark alone while still checking each
+//! proof with Arkworks. The default times both prover adapters.
 //! For the Privacy Rings escrow fixture, set `BENCH_ESCROW_STATEMENTS` to
 //! the directory containing `public.json` and `public-changed.json`.
 
@@ -221,22 +224,6 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args[1].as_str();
     let xbc = std::fs::read(&args[2]).unwrap();
-    let pk_path = std::path::PathBuf::from(&args[3]);
-
-    if mode == "setup-reduced" {
-        let prog = reduced(&xbc);
-        eprintln!("reduced circuit: {} constraints", prog.constraints.len());
-        let circ = XarkCircuit::for_setup_preminimized(prog);
-        let (pk, _) = Groth16::<Bn254>::circuit_specific_setup(
-            ArkCircuit::of(&circ),
-            &mut ChaCha20Rng::seed_from_u64(7),
-        )
-        .unwrap();
-        let mut buf = b"XKPK\x01\x00".to_vec();
-        pk.serialize_with_mode(&mut buf, Compress::Yes).unwrap();
-        std::fs::write(&pk_path, buf).unwrap();
-        return;
-    }
     if mode == "counts" {
         let r = reduced(&xbc);
         let m = XarkCircuit::for_setup(r.clone()).prog().clone();
@@ -260,7 +247,22 @@ fn main() {
         );
         return;
     }
+    let pk_path = std::path::PathBuf::from(&args[3]);
 
+    if mode == "setup-reduced" {
+        let prog = reduced(&xbc);
+        eprintln!("reduced circuit: {} constraints", prog.constraints.len());
+        let circ = XarkCircuit::for_setup_preminimized(prog);
+        let (pk, _) = Groth16::<Bn254>::circuit_specific_setup(
+            ArkCircuit::of(&circ),
+            &mut ChaCha20Rng::seed_from_u64(7),
+        )
+        .unwrap();
+        let mut buf = b"XKPK\x01\x00".to_vec();
+        pk.serialize_with_mode(&mut buf, Compress::Yes).unwrap();
+        std::fs::write(&pk_path, buf).unwrap();
+        return;
+    }
     if mode == "rows" {
         // ⟨A_i,z⟩, ⟨B_i,z⟩, ⟨C_i,z⟩ for every row: compiled templates vs expansion.
         let assign = solve(&xbc, &args[4]);
@@ -378,16 +380,21 @@ fn main() {
                 .and_then(|value| value.parse().ok())
                 .expect("BENCH_MERGE_BELOW must be a nonnegative integer");
         }
+        let mut provers: Vec<Box<dyn Prover + '_>> = Vec::new();
+        match std::env::var("BENCH_WARM_BACKEND").as_deref() {
+            Ok("both") | Err(std::env::VarError::NotPresent) => {
+                provers.push(Box::new(Arkworks::new(&pk)));
+            }
+            Ok("cpu") => {}
+            _ => panic!("BENCH_WARM_BACKEND must be both or cpu"),
+        }
         eprintln!(
             "resident CPU: a_query_len={} merge_below={} merged={}",
             pk.a_query.len(),
             cfg.merge_below,
             pk.a_query.len() < cfg.merge_below
         );
-        let mut provers: Vec<Box<dyn Prover + '_>> = vec![
-            Box::new(Arkworks::new(&pk)),
-            Box::new(Cpu::new(xark_groth16::InMemoryPk::new(&pk), cfg)),
-        ];
+        provers.push(Box::new(Cpu::new(xark_groth16::InMemoryPk::new(&pk), cfg)));
         // Each prover's proofs back to back, as a prove-many server makes them
         // (and as gnark's benchmark times its own), not one interleaved with the
         // other's: a millisecond proof right after an arkworks one measures the
