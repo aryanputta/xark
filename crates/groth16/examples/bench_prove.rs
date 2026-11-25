@@ -18,6 +18,8 @@
 //! Set `BENCH_WARM_BACKEND=cpu` to time Xark alone while still checking each
 //! proof with Arkworks. The default times both prover adapters.
 //! `BENCH_CHECK_ROWS=1` includes witness row checks in warm timing for Gnark.
+//! `BENCH_CHECK_ROWS=expanded` checks by expanding rows and leaves the prover's
+//! row evaluator unchanged. Both print the check duration after verification.
 //! For either Privacy Rings timelock fixture, set `BENCH_PUBLIC_STATEMENTS` to
 //! the directory containing `public.json` and `public-changed.json`.
 
@@ -436,16 +438,34 @@ fn main() {
         // other's: a millisecond proof right after an arkworks one measures the
         // arkworks proof's cache and pool aftermath too.
         let mut rng = rand::thread_rng();
-        let check_rows = std::env::var_os("BENCH_CHECK_ROWS").is_some();
+        let row_check = std::env::var_os("BENCH_CHECK_ROWS");
+        let expanded_check = row_check.as_deref() == Some(std::ffi::OsStr::new("expanded"));
+        let check_src = expanded_check.then(|| {
+            let mut expanded = BytecodeSource::new(&xbc).expect("read rows to check");
+            expanded.set_compiled(false);
+            expanded
+        });
+        let check_rows = row_check.is_some();
         let check_witness = || {
             if check_rows {
                 assert!(
-                    xark_groth16::r1cs::first_unsatisfied(&src, &z).is_none(),
+                    xark_groth16::r1cs::first_unsatisfied(check_src.as_ref().unwrap_or(&src), &z)
+                        .is_none(),
                     "the supplied witness fails a constraint"
                 );
             }
         };
         eprintln!("resident includes row checks: {check_rows}");
+        if check_rows {
+            eprintln!(
+                "witness row checker: {}",
+                if expanded_check {
+                    "expanded"
+                } else {
+                    "compiled"
+                }
+            );
+        }
         let samples: Vec<_> = provers
             .iter_mut()
             .map(|p| {
@@ -457,9 +477,10 @@ fn main() {
                     .map(|_| {
                         let t = Instant::now();
                         check_witness();
+                        let checked_in = check_rows.then(|| t.elapsed());
                         let proof =
                             prove_with_rng(&mut **p, &src, &z, &mut rng).expect("measure proof");
-                        (t.elapsed().as_secs_f64(), proof)
+                        (t.elapsed().as_secs_f64(), proof, checked_in)
                     })
                     .collect::<Vec<_>>()
             })
@@ -467,7 +488,7 @@ fn main() {
         // Verify after all timed batches so pairings cannot affect the samples.
         // Reject the batch before printing any timings if any proof fails.
         for (prover, batch) in provers.iter().zip(&samples) {
-            for (index, (_, proof)) in batch.iter().enumerate() {
+            for (index, (_, proof, _)) in batch.iter().enumerate() {
                 let ark_proof: ark_groth16::Proof<Bn254> = checked_arkworks_encoding(proof);
                 let ark_valid =
                     Groth16::<Bn254>::verify_with_processed_vk(&prepared_vk, public, &ark_proof)
@@ -508,6 +529,17 @@ fn main() {
                 .map(|(p, batch)| format!("{} {:.6}s", p.name(), batch[i].0))
                 .collect();
             println!("warm prove: {}", line.join("  "));
+        }
+        for (prover, batch) in provers.iter().zip(&samples) {
+            for (_, _, checked_in) in batch {
+                if let Some(elapsed) = checked_in {
+                    println!(
+                        "warm row check: {} {} ns",
+                        prover.name(),
+                        elapsed.as_nanos()
+                    );
+                }
+            }
         }
         return;
     }
