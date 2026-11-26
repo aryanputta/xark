@@ -10,6 +10,7 @@ on:
       - perf/resident-stream-solver
       - perf/compact-resident-stream-solver
       - perf/sparse-resident-solver-metadata
+      - feat/prepared-cpu-prover
 
 permissions:
   contents: read
