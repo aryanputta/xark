@@ -9,6 +9,7 @@ on:
       - test/g2-resident-request-batches
       - perf/resident-stream-solver
       - perf/compact-resident-stream-solver
+      - perf/sparse-resident-solver-metadata
 
 permissions:
   contents: read
