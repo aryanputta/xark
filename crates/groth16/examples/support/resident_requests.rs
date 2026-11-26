@@ -29,6 +29,29 @@ impl Fixture {
     }
 }
 
+// Keep this timed preflight identical to the pinned upstream request wrapper.
+// The diagnostic row check expands rows and measures a different workload.
+fn first_unsatisfied_compiled(src: &BytecodeSource, z: &[Fr]) -> Option<usize> {
+    let layout = src.layout();
+    let value = |id| z[layout.position(id).expect("unallocated row variable")];
+    for window in src.windows(1 << 14) {
+        let mut row = window.rows.start;
+        let mut first = None;
+        src.stream()
+            .eval_items(window.handle, &value, [true; 3], &mut |[a, b, c]| {
+                if first.is_none() && a * b != c {
+                    first = Some(row);
+                }
+                row += 1;
+            });
+        debug_assert_eq!(row, window.rows.end);
+        if first.is_some() {
+            return first;
+        }
+    }
+    None
+}
+
 pub(super) fn run(args: &[String]) {
     let [xbc, key, mode, concurrency, requests, directories @ ..] = args else {
         panic!("usage: warm-requests XBC KEY cpu|gls CONCURRENCY REQUESTS FIXTURE...");
@@ -117,7 +140,7 @@ pub(super) fn run(args: &[String]) {
         drop(assignment);
         assert!(witness[1] == fixture.expected, "witness statement mismatch");
         assert!(
-            xark_groth16::r1cs::first_unsatisfied(&source, &witness).is_none(),
+            first_unsatisfied_compiled(&source, &witness).is_none(),
             "request witness is unsatisfied"
         );
         let cpu = Cpu::new(xark_groth16::InMemoryPk::new(&key), cfg.clone());
