@@ -20,6 +20,8 @@
 //! For a controlled CPU comparison, set `BENCH_MERGE_BELOW=0` to disable merging.
 //! Set `BENCH_WARM_BACKEND=cpu` to time Xark alone while still checking each
 //! proof with Arkworks. The default times both prover adapters.
+//! `BENCH_SHARED_RESIDENT=1` runs two proof lanes with one Rayon thread each.
+//! Both borrow the same key and solved witness.
 //! `BENCH_CHECK_ROWS=1` includes witness row checks in warm timing for Gnark.
 //! `BENCH_CHECK_ROWS=expanded` checks by expanding rows and leaves the prover's
 //! row evaluator unchanged. Both print the check duration after verification.
@@ -120,6 +122,13 @@ unsafe impl GlobalAlloc for PeakAlloc {
 static A: PeakAlloc = PeakAlloc;
 
 const MB: f64 = 1024.0 * 1024.0;
+
+struct WarmSample {
+    proof: xark_groth16::Proof<Bn254>,
+    elapsed: Duration,
+    checked_in: Option<Duration>,
+    completion: Duration,
+}
 
 /// Records `(phase, ms, peak heap during the phase, live heap after)`.
 struct Phases {
@@ -473,13 +482,25 @@ fn main() {
     if mode == "warm" {
         // Key already resident (prove-many server): prove time only, every prover,
         // a line a proof: `warm <xbc> <pk> <inputs> [proofs] [warmups]`.
+        let shared = std::env::var_os("BENCH_SHARED_RESIDENT").is_some();
         let runs: usize = args
             .get(5)
             .map_or(30, |n| n.parse().expect("a number of proofs"));
-        let warmups: usize = args
-            .get(6)
-            .map_or(3, |n| n.parse().expect("a number of warmups"));
+        let warmups: usize = args.get(6).map_or(if shared { 4 } else { 3 }, |n| {
+            n.parse().expect("a number of warmups")
+        });
         assert!(runs > 0, "warm mode requires at least one measured proof");
+        let profile = std::env::var_os("BENCH_RESIDENT_PROFILE").is_some();
+        if shared {
+            assert!(!tracking(), "set BENCH_TIME=1 for shared resident proofs");
+            assert_eq!(std::env::var("BENCH_WARM_BACKEND").as_deref(), Ok("cpu"));
+            assert_eq!(rayon::current_num_threads(), 2, "set RAYON_NUM_THREADS=2");
+            assert!(!profile, "shared resident proofs do not record task spans");
+            assert!(
+                runs.is_multiple_of(2) && warmups.is_multiple_of(2),
+                "shared resident proofs require even sample and warmup counts"
+            );
+        }
         let assign = solve(&xbc, &args[4]);
         let pk = xark_backend::Groth16Keys::read_proving_key(&pk_path).unwrap();
         let src = BytecodeSource::new(&xbc).unwrap();
@@ -493,6 +514,12 @@ fn main() {
         let changed_public_hash = std::env::var_os("BENCH_PUBLIC_STATEMENTS")
             .or_else(|| std::env::var_os("BENCH_ESCROW_STATEMENTS"))
             .map(|directory| check_statements(std::path::Path::new(&directory), public));
+        if shared {
+            assert!(
+                changed_public_hash.is_some(),
+                "shared resident proofs need the SDK statements"
+            );
+        }
         let vk: ark_groth16::VerifyingKey<Bn254> = checked_arkworks_encoding(&pk.vk);
         let prepared_vk = Groth16::<Bn254>::process_vk(&vk).expect("prepare Arkworks key");
         let mut cfg = ProverConfig::default();
@@ -502,7 +529,6 @@ fn main() {
                 .and_then(|value| value.parse().ok())
                 .expect("BENCH_MERGE_BELOW must be a nonnegative integer");
         }
-        let profile = std::env::var_os("BENCH_RESIDENT_PROFILE").is_some();
         if profile {
             assert!(!tracking(), "set BENCH_TIME=1 for resident task timing");
             assert_eq!(std::env::var("BENCH_WARM_BACKEND").as_deref(), Ok("cpu"));
@@ -530,20 +556,7 @@ fn main() {
             cfg.merge_below,
             pk.a_query.len() < cfg.merge_below
         );
-        let cpu = Cpu::new(xark_groth16::InMemoryPk::new(&pk), cfg);
-        if profile {
-            provers.push(Box::new(ProfiledCpu {
-                cpu,
-                profiles: &mut profiles,
-            }));
-        } else {
-            provers.push(Box::new(cpu));
-        }
-        // Each prover's proofs back to back, as a prove-many server makes them
-        // (and as gnark's benchmark times its own), not one interleaved with the
-        // other's: a millisecond proof right after an arkworks one measures the
-        // arkworks proof's cache and pool aftermath too.
-        let mut rng = rand::thread_rng();
+        let new_cpu = || Cpu::new(xark_groth16::InMemoryPk::new(&pk), cfg.clone());
         let row_check = std::env::var_os("BENCH_CHECK_ROWS");
         let expanded_check = row_check.as_deref() == Some(std::ffi::OsStr::new("expanded"));
         let check_src = expanded_check.then(|| {
@@ -572,29 +585,80 @@ fn main() {
                 }
             );
         }
-        let samples: Vec<_> = provers
-            .iter_mut()
-            .map(|p| {
-                for _ in 0..warmups {
+        let warm_up = |prover: &mut dyn Prover, count| {
+            let mut rng = rand::thread_rng();
+            for _ in 0..count {
+                check_witness();
+                prove_with_rng(prover, &src, &z, &mut rng).expect("warm up prover");
+            }
+        };
+        let measure = |prover: &mut dyn Prover, count, batch_start: Instant| {
+            let mut rng = rand::thread_rng();
+            (0..count)
+                .map(|_| {
+                    let start = Instant::now();
                     check_witness();
-                    prove_with_rng(&mut **p, &src, &z, &mut rng).expect("warm up prover");
-                }
-                (0..runs)
-                    .map(|_| {
-                        let t = Instant::now();
-                        check_witness();
-                        let checked_in = check_rows.then(|| t.elapsed());
-                        let proof =
-                            prove_with_rng(&mut **p, &src, &z, &mut rng).expect("measure proof");
-                        (t.elapsed().as_secs_f64(), proof, checked_in)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+                    let checked_in = check_rows.then(|| start.elapsed());
+                    let proof = prove_with_rng(prover, &src, &z, &mut rng).expect("measure proof");
+                    let end = Instant::now();
+                    WarmSample {
+                        proof,
+                        elapsed: end - start,
+                        checked_in,
+                        completion: end - batch_start,
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let samples: Vec<_> = if shared {
+            let make_pool = || {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .build()
+                    .unwrap()
+            };
+            let (left_pool, right_pool) = (make_pool(), make_pool());
+            let (mut left, mut right) = (new_cpu(), new_cpu());
+            // Finish both warmups before timing the batch. The lanes borrow
+            // the same key and witness, with independent prover state and RNGs.
+            std::thread::scope(|scope| {
+                scope.spawn(|| left_pool.install(|| warm_up(&mut left, warmups / 2)));
+                right_pool.install(|| warm_up(&mut right, warmups / 2));
+            });
+            let start = Instant::now();
+            let batch = std::thread::scope(|scope| {
+                let first =
+                    scope.spawn(|| left_pool.install(|| measure(&mut left, runs / 2, start)));
+                let second = right_pool.install(|| measure(&mut right, runs / 2, start));
+                let mut batch = first.join().expect("measure first proof lane");
+                batch.extend(second);
+                batch
+            });
+            vec![("xark-groth16", batch)]
+        } else {
+            if profile {
+                provers.push(Box::new(ProfiledCpu {
+                    cpu: new_cpu(),
+                    profiles: &mut profiles,
+                }));
+            } else {
+                provers.push(Box::new(new_cpu()));
+            }
+            // Whole batches keep the backends' cache and pool effects separate.
+            provers
+                .iter_mut()
+                .map(|prover| {
+                    warm_up(&mut **prover, warmups);
+                    let batch = measure(&mut **prover, runs, Instant::now());
+                    (prover.name(), batch)
+                })
+                .collect()
+        };
         // Verify after all timed batches so pairings cannot affect the samples.
         // Reject the batch before printing any timings if any proof fails.
-        for (prover, batch) in provers.iter().zip(&samples) {
-            for (index, (_, proof, _)) in batch.iter().enumerate() {
+        for (name, batch) in &samples {
+            for (index, sample) in batch.iter().enumerate() {
+                let proof = &sample.proof;
                 let ark_proof: ark_groth16::Proof<Bn254> = checked_arkworks_encoding(proof);
                 let ark_valid =
                     Groth16::<Bn254>::verify_with_processed_vk(&prepared_vk, public, &ark_proof)
@@ -604,10 +668,11 @@ fn main() {
                 assert!(
                     ark_valid && xark_valid,
                     "{} proof {} failed verification (Arkworks={ark_valid}, Xark={xark_valid})",
-                    prover.name(),
+                    name,
                     index + 1
                 );
-                if let Some(changed) = changed_public_hash.as_ref().filter(|_| index == 0) {
+                let first_in_lane = index == 0 || (shared && index == runs / 2);
+                if let Some(changed) = changed_public_hash.as_ref().filter(|_| first_in_lane) {
                     let changed = std::slice::from_ref(changed);
                     let ark_accepts = Groth16::<Bn254>::verify_with_processed_vk(
                         &prepared_vk,
@@ -619,8 +684,7 @@ fn main() {
                         .expect("verify changed statement with Xark");
                     assert!(
                         !ark_accepts && !xark_accepts,
-                        "{} proof accepted under changed statement (Arkworks={ark_accepts}, Xark={xark_accepts})",
-                        prover.name()
+                        "{name} proof accepted under changed statement (Arkworks={ark_accepts}, Xark={xark_accepts})"
                     );
                 }
             }
@@ -628,21 +692,25 @@ fn main() {
         if changed_public_hash.is_some() {
             println!("changed statement rejected by Arkworks and Xark for each backend");
         }
+        if shared {
+            println!("shared resident proof lanes verified: two one-thread pools");
+        }
         for i in 0..runs {
-            let line: Vec<String> = provers
+            let line: Vec<String> = samples
                 .iter()
-                .zip(&samples)
-                .map(|(p, batch)| format!("{} {:.6}s", p.name(), batch[i].0))
+                .map(|(name, batch)| format!("{name} {:.6}s", batch[i].elapsed.as_secs_f64()))
                 .collect();
             println!("warm prove: {}", line.join("  "));
         }
-        for (prover, batch) in provers.iter().zip(&samples) {
-            for (_, _, checked_in) in batch {
-                if let Some(elapsed) = checked_in {
+        for (name, batch) in &samples {
+            for sample in batch {
+                if let Some(elapsed) = sample.checked_in {
+                    println!("warm row check: {name} {} ns", elapsed.as_nanos());
+                }
+                if *name == "xark-groth16" {
                     println!(
-                        "warm row check: {} {} ns",
-                        prover.name(),
-                        elapsed.as_nanos()
+                        "warm batch completion: {name} {} ns",
+                        sample.completion.as_nanos()
                     );
                 }
             }

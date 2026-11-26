@@ -17,6 +17,7 @@ import subprocess
 import time
 
 PROFILES = (("one-worker", 1, 1), ("two-workers", 1, 2), ("two-processes", 2, 1))
+SHARED_PROFILES = (*PROFILES[1:], ("shared-resident", 1, 2))
 WORKLOADS = ("escrow", "withdrawal")
 INPUTS = (
     "circuit.xbc",
@@ -26,10 +27,14 @@ INPUTS = (
     "public-changed.json",
 )
 TIMING = re.compile(r"^warm prove: xark-groth16 ([0-9]+\.[0-9]+)s$", re.MULTILINE)
+COMPLETION = re.compile(
+    r"^warm batch completion: xark-groth16 ([1-9][0-9]*) ns$", re.MULTILINE
+)
 REJECTION = "changed statement rejected by Arkworks and Xark for each backend"
+SHARED_VERIFIED = "shared resident proof lanes verified: two one-thread pools"
 
 
-def verified_samples(log, expected):
+def verified_samples(log, expected, *, shared=False):
     text = log.read_text()
     timings = [float(value) for value in TIMING.findall(text)]
     if (
@@ -37,6 +42,7 @@ def verified_samples(log, expected):
         or any(value <= 0 for value in timings)
         or REJECTION not in text
         or "witness row checker: compiled" not in text
+        or (shared and SHARED_VERIFIED not in text.splitlines())
     ):
         raise RuntimeError(f"missing verification or timing evidence in {log}")
     return timings
@@ -47,9 +53,24 @@ def sha256(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def run_arm(binary, fixture, destination, processes, threads, samples):
+def batch_completion_metrics(log, expected):
+    completions = sorted(int(value) for value in COMPLETION.findall(log.read_text()))
+    if len(completions) != expected:
+        raise RuntimeError(f"missing batch completion evidence in {log}")
+    return {
+        "warm_batch_ms": round(completions[-1] / 1e6, 3),
+        "warm_batch_completion_p95_ms": round(
+            completions[math.ceil(expected * 0.95) - 1] / 1e6, 3
+        ),
+    }
+
+
+def run_arm(binary, fixture, destination, profile, samples, shared_study):
+    name, processes, threads = profile
     environment = {
-        key: value for key, value in os.environ.items() if not key.startswith("BENCH_")
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("BENCH_") and key != "NO_BATCH_AFFINE"
     }
     environment.update(
         BENCH_TIME="1",
@@ -59,6 +80,8 @@ def run_arm(binary, fixture, destination, processes, threads, samples):
         BENCH_PUBLIC_STATEMENTS=str(fixture),
         RAYON_NUM_THREADS=str(threads),
     )
+    if name == "shared-resident":
+        environment["BENCH_SHARED_RESIDENT"] = "1"
     count = samples // processes
     command = [
         str(binary),
@@ -109,8 +132,12 @@ def run_arm(binary, fixture, destination, processes, threads, samples):
 
     if any(statuses):
         raise RuntimeError(f"proof workers exited {statuses}. See {destination}")
-    timings = sorted(value for log in logs for value in verified_samples(log, count))
-    return {
+    timings = sorted(
+        value
+        for log in logs
+        for value in verified_samples(log, count, shared=name == "shared-resident")
+    )
+    metrics = {
         "samples": len(timings),
         "p50_ms": round(statistics.median(timings) * 1000, 3),
         "p95_ms": round(timings[math.ceil(len(timings) * 0.95) - 1] * 1000, 3),
@@ -120,6 +147,14 @@ def run_arm(binary, fixture, destination, processes, threads, samples):
         "one_min_load_start": round(load_start, 3),
         "one_min_load_end": round(os.getloadavg()[0], 3),
     }
+    if shared_study:
+        # Separate processes have no common measured-batch start time.
+        metrics.update(
+            batch_completion_metrics(logs[0], count)
+            if processes == 1
+            else {"warm_batch_ms": None, "warm_batch_completion_p95_ms": None}
+        )
+    return metrics
 
 
 def main():
@@ -129,6 +164,11 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument(
         "--samples", type=int, default=20, help="even sample count per arm"
+    )
+    parser.add_argument(
+        "--shared-resident",
+        action="store_true",
+        help="compare three schedules at a fixed two-thread proving budget",
     )
     args = parser.parse_args()
     if args.samples < 2 or args.samples % 2:
@@ -153,28 +193,30 @@ def main():
         + "\n"
     )
     rows = []
-    for rotation in range(len(PROFILES)):
-        order = PROFILES[rotation:] + PROFILES[:rotation]
+    profiles = SHARED_PROFILES if args.shared_resident else PROFILES
+    for rotation in range(len(profiles)):
+        order = profiles[rotation:] + profiles[:rotation]
         workloads = WORKLOADS if rotation % 2 == 0 else WORKLOADS[::-1]
         for workload in workloads:
-            for position, (profile, processes, threads) in enumerate(order, 1):
-                label = f"{workload}-{rotation + 1}-{profile}"
+            for position, profile in enumerate(order, 1):
+                name, processes, threads = profile
+                label = f"{workload}-{rotation + 1}-{name}"
                 destination = args.output / label
                 destination.mkdir()
                 metrics = run_arm(
                     binary,
                     fixtures / workload,
                     destination,
-                    processes,
-                    threads,
+                    profile,
                     args.samples,
+                    args.shared_resident,
                 )
                 rows.append(
                     {
                         "workload": workload,
                         "rotation": rotation + 1,
                         "position": position,
-                        "profile": profile,
+                        "profile": name,
                         "processes": processes,
                         "threads_per_process": threads,
                         **metrics,
