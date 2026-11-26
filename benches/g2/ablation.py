@@ -74,7 +74,7 @@ def summarize(runner, path, runs, seed):
                         ]
                         for block in blocks
                     }
-                    for choice in {0, arm}
+                    for choice in {0, arm, arm & ~4}
                 }
                 deltas = [
                     statistics.median(series[0][block])
@@ -88,6 +88,18 @@ def summarize(runner, path, runs, seed):
                 value["paired_block_savings_interval_ns"] = paired_interval(
                     deltas, seed
                 )
+                if arm & 4:
+                    shifted_savings = [
+                        statistics.median(series[arm & ~4][block])
+                        - statistics.median(series[arm][block])
+                        for block in blocks
+                    ]
+                    value["median_paired_shift_savings_ns"] = statistics.median(
+                        shifted_savings
+                    )
+                    value["paired_block_shift_savings_interval_ns"] = paired_interval(
+                        shifted_savings, seed
+                    )
                 metrics[field] = value
             steps = [runs_by_arm[workload, block, arm] for block in blocks]
             setup = [step["setup"]["ns"] for step in steps if step["setup"] is not None]
@@ -104,8 +116,10 @@ def summarize(runner, path, runs, seed):
                 max(observed_rss) if None not in observed_rss else None
             )
             if arm & 4:
-                savings = metrics["proof_ns"]["median_paired_savings_ns"]
-                low_interval = metrics["proof_ns"]["paired_block_savings_interval_ns"]
+                savings = metrics["proof_ns"]["median_paired_shift_savings_ns"]
+                low_interval = metrics["proof_ns"][
+                    "paired_block_shift_savings_interval_ns"
+                ]
                 metrics["setup_divided_by_paired_proof_savings"] = (
                     math.ceil(statistics.median(setup) / savings)
                     if savings > 0
