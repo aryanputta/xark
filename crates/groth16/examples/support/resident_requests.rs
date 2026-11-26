@@ -29,6 +29,16 @@ impl Fixture {
     }
 }
 
+#[cfg(feature = "msm-b-shared-bench")]
+fn shared_b_mode(value: Result<String, std::env::VarError>, use_gls: bool) -> bool {
+    match value {
+        Err(std::env::VarError::NotPresent) => use_gls,
+        Ok(value) if value == "0" => false,
+        Ok(value) if value == "1" => true,
+        _ => panic!("BENCH_SHARED_B_SCALARS must be 0 or 1"),
+    }
+}
+
 pub(super) fn run(args: &[String]) {
     let [xbc, key, mode, concurrency, requests, directories @ ..] = args else {
         panic!("usage: warm-requests XBC KEY cpu|gls CONCURRENCY REQUESTS FIXTURE...");
@@ -39,6 +49,8 @@ pub(super) fn run(args: &[String]) {
         "gls" => true,
         _ => panic!("expected cpu or gls"),
     };
+    #[cfg(feature = "msm-b-shared-bench")]
+    let share_b_scalars = shared_b_mode(std::env::var("BENCH_SHARED_B_SCALARS"), use_gls);
     let concurrency: usize = concurrency.parse().expect("request concurrency");
     let requests: usize = requests.parse().expect("number of requests");
     assert!((1..=64).contains(&concurrency) && requests >= concurrency);
@@ -129,7 +141,7 @@ pub(super) fn run(args: &[String]) {
                 .as_ref()
                 .map(|msm| msm as &xark_groth16::prover::BenchResidentB2<'_>),
             #[cfg(feature = "msm-b-shared-bench")]
-            share_b_scalars: use_gls,
+            share_b_scalars,
         };
         let proof = prove_with_rng(&mut prover, &source, &witness, &mut rand::thread_rng())
             .expect("generate request proof");
@@ -186,9 +198,32 @@ pub(super) fn run(args: &[String]) {
         }
     }
     eprintln!("prepared stream solver: {}", u8::from(prepare_solver));
+    #[cfg(feature = "msm-b-shared-bench")]
+    eprintln!("shared B scalars: {}", u8::from(share_b_scalars));
     println!(
         "requests verified mode={mode} concurrency={concurrency} threads={} count={requests} setup_ns={} altered=rejected cross_request=rejected",
         rayon::current_num_threads(),
         setup.as_nanos()
     );
+}
+
+#[cfg(all(test, feature = "msm-b-shared-bench"))]
+mod tests {
+    use super::shared_b_mode;
+
+    #[test]
+    fn shared_b_selector_supports_cpu_and_gls_ablation() {
+        assert!(!shared_b_mode(Err(std::env::VarError::NotPresent), false));
+        assert!(shared_b_mode(Err(std::env::VarError::NotPresent), true));
+        for use_gls in [false, true] {
+            assert!(!shared_b_mode(Ok("0".into()), use_gls));
+            assert!(shared_b_mode(Ok("1".into()), use_gls));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "BENCH_SHARED_B_SCALARS must be 0 or 1")]
+    fn shared_b_selector_rejects_invalid_value() {
+        shared_b_mode(Ok("maybe".into()), false);
+    }
 }
