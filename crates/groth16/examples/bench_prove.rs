@@ -349,6 +349,14 @@ fn arg_val(args: &[String], k: &str) -> Option<String> {
 }
 
 fn solve(xbc: &[u8], inputs_path: &str) -> BTreeMap<VarId, Fr> {
+    solve_with_prepared(xbc, inputs_path, None)
+}
+
+fn solve_with_prepared(
+    xbc: &[u8],
+    inputs_path: &str,
+    prepared: Option<&xark_ir::function_decode::PreparedStreamSolver>,
+) -> BTreeMap<VarId, Fr> {
     let json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(inputs_path).unwrap()).unwrap();
     let names: BTreeMap<String, String> = json
@@ -357,10 +365,16 @@ fn solve(xbc: &[u8], inputs_path: &str) -> BTreeMap<VarId, Fr> {
         .iter()
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
         .collect();
-    let vars = xark_ir::function_decode::decode_input_vars(xbc).unwrap();
-    let ids = xark_prover::resolve_input_ids(&vars, &names).unwrap();
-    drop(vars);
-    let (fp, _) = xark_ir::function_decode::stream_solve_verify(xbc, &ids).unwrap();
+    let (fp, _) = if let Some(prepared) = prepared {
+        let ids = xark_prover::resolve_input_ids(prepared.input_vars(), &names).unwrap();
+        prepared.solve_verify(&ids)
+    } else {
+        let vars = xark_ir::function_decode::decode_input_vars(xbc).unwrap();
+        let ids = xark_prover::resolve_input_ids(&vars, &names).unwrap();
+        drop(vars);
+        xark_ir::function_decode::stream_solve_verify(xbc, &ids)
+    }
+    .unwrap();
     xark_prover::lower_witness(&fp)
 }
 

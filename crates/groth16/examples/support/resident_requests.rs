@@ -6,7 +6,8 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::{
     Bn254, BytecodeSource, ConstraintSource, Cpu, Fr, Groth16, Instant, ProfiledCpu, ProverConfig,
-    SNARK, checked_arkworks_encoding, prove_with_rng, public_hash, query_msm, solve, tracking,
+    SNARK, checked_arkworks_encoding, prove_with_rng, public_hash, query_msm, solve_with_prepared,
+    tracking,
 };
 
 struct Fixture {
@@ -63,6 +64,15 @@ pub(super) fn run(args: &[String]) {
     );
     let xbc = std::fs::read(xbc).expect("load circuit");
     let source = BytecodeSource::new(&xbc).expect("build compiled constraint source");
+    let prepare_solver = match std::env::var("BENCH_PREPARED_SOLVER").as_deref() {
+        Err(std::env::VarError::NotPresent) | Ok("0") => false,
+        Ok("1") => true,
+        _ => panic!("BENCH_PREPARED_SOLVER must be 0 or 1"),
+    };
+    let solver = prepare_solver.then(|| {
+        xark_ir::function_decode::PreparedStreamSolver::new(&xbc)
+            .expect("prepare immutable witness and row programs")
+    });
     let key = xark_backend::Groth16Keys::read_proving_key(Path::new(key)).expect("load key");
     assert_eq!(key.vk.gamma_abc_g1.len(), 2, "expected one public input");
     assert_eq!(
@@ -94,7 +104,12 @@ pub(super) fn run(args: &[String]) {
     let prove = |index: usize| {
         let began = Instant::now();
         let fixture = &fixtures[index % fixtures.len()];
-        let mut assignment = solve(&xbc, fixture.inputs.to_str().expect("UTF-8 path"));
+        let mut assignment = solve_with_prepared(
+            &xbc,
+            fixture.inputs.to_str().expect("UTF-8 path"),
+            solver.as_ref(),
+        );
+        let solve_elapsed = began.elapsed();
         let witness = Zeroizing::new(source.layout().assignment_from_map(&assignment));
         for value in assignment.values_mut() {
             value.zeroize();
@@ -119,7 +134,7 @@ pub(super) fn run(args: &[String]) {
         let proof = prove_with_rng(&mut prover, &source, &witness, &mut rand::thread_rng())
             .expect("generate request proof");
         drop(witness);
-        (proof, began.elapsed())
+        (proof, began.elapsed(), solve_elapsed)
     };
 
     let verify = |index: usize, proof: &xark_groth16::Proof<Bn254>| {
@@ -150,7 +165,7 @@ pub(super) fn run(args: &[String]) {
         let last = first.saturating_add(concurrency).min(requests);
         let proofs: Vec<_> = (first..last).into_par_iter().map(prove).collect();
         let elapsed = start.elapsed();
-        for (index, (proof, _)) in (first..last).zip(&proofs) {
+        for (index, (proof, _, _)) in (first..last).zip(&proofs) {
             verify(index, proof);
         }
         println!(
@@ -158,14 +173,19 @@ pub(super) fn run(args: &[String]) {
             last - first,
             elapsed.as_nanos()
         );
-        for (index, (_, elapsed)) in (first..last).zip(&proofs) {
+        for (index, (_, elapsed, solve_elapsed)) in (first..last).zip(&proofs) {
             println!(
                 "request verified index={index} fixture={} service_ns={}",
                 index % fixtures.len(),
                 elapsed.as_nanos()
             );
+            eprintln!(
+                "request solver index={index} solve_ns={}",
+                solve_elapsed.as_nanos()
+            );
         }
     }
+    eprintln!("prepared stream solver: {}", u8::from(prepare_solver));
     println!(
         "requests verified mode={mode} concurrency={concurrency} threads={} count={requests} setup_ns={} altered=rejected cross_request=rejected",
         rayon::current_num_threads(),
