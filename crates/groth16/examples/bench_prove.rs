@@ -9,6 +9,7 @@
 //! bench_prove ark    <circuit.xbc> <pk.bin> <inputs.json> [--reduced]
 //! bench_prove stream <circuit.xbc> <pk.bin> <inputs.json> [--source xbc|min] [--tile N] [--chunk N]
 //! BENCH_TIME=1 bench_prove warm <circuit.xbc> <reduced pk.bin> <inputs.json> [proofs] [warmups]
+//! BENCH_TIME=1 bench_prove warm-requests <circuit.xbc> <reduced pk.bin> <cpu|gls> <concurrency> <requests> <fixture-dir>...
 //! BENCH_TIME=1 bench_prove query-msm <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-xark <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-b2-shifted <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
@@ -94,6 +95,9 @@ mod arkworks_prover;
 mod iden3;
 #[path = "support/query_msm.rs"]
 mod query_msm;
+#[cfg(feature = "msm-g2-shifted-bench")]
+#[path = "support/resident_requests.rs"]
+mod resident_requests;
 use ark::{ArkCircuit, convert};
 use arkworks_prover::Arkworks;
 
@@ -404,6 +408,15 @@ fn main() {
         TRACK.store(false, Relaxed);
     }
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|mode| mode == "warm-requests") {
+        #[cfg(feature = "msm-g2-shifted-bench")]
+        {
+            resident_requests::run(&args[2..]);
+            return;
+        }
+        #[cfg(not(feature = "msm-g2-shifted-bench"))]
+        panic!("warm-requests requires the msm-g2-shifted-bench feature");
+    }
     if args
         .get(1)
         .is_some_and(|mode| mode == "query-msm-g2-factorial")
