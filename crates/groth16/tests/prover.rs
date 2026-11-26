@@ -469,6 +469,49 @@ fn shared_b_scalars_match_split_cpu_across_distinct_requests() {
             assert!(!ArkG16::verify(&vk, &[Fr::from(43u64)], proof).unwrap());
         }
     }
+
+    // Each concurrent request owns its witness and canonical B-scalar buffer.
+    // Reusing one immutable key must not mix the two public statements.
+    struct SharedWithoutTiming;
+    impl xark_groth16::Probe for SharedWithoutTiming {
+        fn share_b_scalars(&self) -> bool {
+            true
+        }
+    }
+    let cases = [(6u64, 7u64), (5, 9)];
+    let barrier = std::sync::Barrier::new(cases.len());
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = cases
+            .into_iter()
+            .map(|(x, y)| {
+                let src = &src;
+                let key = &key;
+                let config = &config;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let z = src.layout().assignment_from_map(&assign(x, y));
+                    barrier.wait();
+                    let proof = xark_groth16::prove_with_randomness(
+                        src,
+                        &z,
+                        &mut InMemoryPk::new(key),
+                        Fr::from(11u64),
+                        Fr::from(17u64),
+                        config,
+                        &mut SharedWithoutTiming,
+                    )
+                    .unwrap();
+                    (x * y, proof)
+                })
+            })
+            .collect();
+        for handle in handles {
+            let (public, proof) = handle.join().unwrap();
+            let other = if public == 42 { 45 } else { 42 };
+            assert!(ArkG16::verify(&vk, &[Fr::from(public)], &proof).unwrap());
+            assert!(!ArkG16::verify(&vk, &[Fr::from(other)], &proof).unwrap());
+        }
+    });
 }
 
 #[test]
