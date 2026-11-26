@@ -13,6 +13,9 @@ use xark_groth16::{BytecodeSource, ConstraintSource, ProvingKey};
 
 const MAGIC: &[u8; 8] = b"XKQMSM01";
 
+#[path = "shifted_b2.rs"]
+pub(super) mod shifted_b2;
+
 fn counts(args: &[String]) -> Result<(usize, usize), &'static str> {
     let (samples, warmups): (usize, usize) = match args {
         [] => (30, 3),

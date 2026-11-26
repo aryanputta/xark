@@ -11,6 +11,7 @@
 //! BENCH_TIME=1 bench_prove warm <circuit.xbc> <reduced pk.bin> <inputs.json> [proofs] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-xark <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
+//! BENCH_TIME=1 bench_prove query-msm-b2-shifted <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! bench_prove query-msm-export <circuit.xbc> <reduced pk.bin> <statement-dir> <new-output-file>
 //! ```
 //! `--reduced` / `--source xbc` prove the template-reduced circuit (key from
@@ -40,6 +41,11 @@
 //! and alternates both modes for B2 in one process. Leave the selector unset.
 //! `BENCH_G2_SPARSE_ENDOMORPHISM=1` specializes the G2 GLV point map.
 //! `query-msm-g2-factorial` checks all four combinations on the same B2 inputs.
+//! `query-msm-b2-shifted` compares the B2 MSM with a resident table of original
+//! and 128-bit-shifted points. It times preparation separately and checks both
+//! outputs against Arkworks. The 3 MiB table cap covers its retained affine
+//! payload. Warm timings include scalar splitting and allocation. The ordinary
+//! B2 baseline already uses a GLV split for eligible full-width scalars.
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
 //! Arkworks reference sums for a same-input benchmark. Use reproducible test
 //! fixtures and keep the witness-bearing export in local scratch storage.
@@ -389,6 +395,10 @@ fn main() {
     match mode {
         "query-msm" | "query-msm-xark" => {
             query_msm::run(&args[2..], mode == "query-msm-xark");
+            return;
+        }
+        "query-msm-b2-shifted" => {
+            query_msm::shifted_b2::run(&args[2..]);
             return;
         }
         "query-msm-export" => {
