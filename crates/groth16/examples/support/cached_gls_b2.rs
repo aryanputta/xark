@@ -662,7 +662,7 @@ mod tests {
             );
         }
         assert!(outsiders > 0);
-        let off_curve = G2Affine::new_unchecked(Fq2::ZERO, Fq2::ZERO);
+        let off_curve = G2Affine::new_unchecked(Fq2::ZERO, Fq2::ONE);
         assert!(!off_curve.is_on_curve());
         assert_eq!(check_subgroup(&[off_curve], true), Err(0));
     }
