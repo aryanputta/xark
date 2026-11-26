@@ -1,4 +1,4 @@
-//! Compare a portable product-then-reduce prototype with Arkworks Fq sum_of_products.
+//! Compare an interleaved portable two-product prototype with Arkworks Fq sum_of_products.
 //! The prototype is benchmark-only and is not called by the prover.
 
 use std::hint::black_box;
@@ -44,15 +44,12 @@ fn accumulate_row(t: &mut [u64; 9], offset: usize, a: u64, b: &[u64; LIMBS]) {
 fn two_products(values: &[Fq; 4]) -> Fq {
     let mut t = [0u64; 9];
     let [a, b, c, d] = values;
-    for (i, limb) in a.0.0.iter().copied().enumerate() {
-        accumulate_row(&mut t, i, limb, &b.0.0);
-    }
-    for (i, limb) in c.0.0.iter().copied().enumerate() {
-        accumulate_row(&mut t, i, limb, &d.0.0);
-    }
-    // Products of canonical residues satisfy T < 2p² < pR. REDC therefore
-    // leaves a value below 2p and a single conditional subtraction suffices.
+    // Higher operand rows start at i+1 or later, so they cannot affect the
+    // low word used to choose this Montgomery factor. Retiring it here
+    // preserves the same REDC operation as accumulating both full products.
     for i in 0..LIMBS {
+        accumulate_row(&mut t, i, a.0.0[i], &b.0.0);
+        accumulate_row(&mut t, i, c.0.0[i], &d.0.0);
         let factor = t[i].wrapping_mul(INV);
         accumulate_row(&mut t, i, factor, &MODULUS);
         debug_assert_eq!(t[i], 0);
