@@ -179,8 +179,6 @@ impl<G: SwCurve> AffineBuckets<G> {
         use ark_ff::{AdditiveGroup, Field};
         let one = G::BaseField::one();
         self.den.clear();
-        self.pre.clear();
-        let mut acc = one;
         for &(b, px, py) in &self.batch {
             let (x1, y1) = (self.x[b as usize], self.y[b as usize]);
             let d = if x1 != px {
@@ -190,16 +188,11 @@ impl<G: SwCurve> AffineBuckets<G> {
             } else {
                 one // P + (−P) = ∞ (or a 2-torsion point): no inverse needed
             };
-            self.pre.push(acc);
             self.den.push(d);
-            acc *= d;
         }
-        let mut inv = acc.inverse().expect("nonzero batch denominator");
-        for i in (0..self.batch.len()).rev() {
+        G::BaseField::batch_inverses(&self.den, &mut self.pre, |i, inv_i| {
             let (b, px, py) = self.batch[i];
             let bi = b as usize;
-            let inv_i = inv * self.pre[i];
-            inv *= self.den[i];
             let (x1, y1) = (self.x[bi], self.y[bi]);
             let lambda = if x1 != px {
                 py.fsub(&y1) * inv_i
@@ -207,12 +200,12 @@ impl<G: SwCurve> AffineBuckets<G> {
                 (x1.square().double() + x1.square() + G::coeff_a()) * inv_i
             } else {
                 self.used[bi] = false;
-                continue;
+                return;
             };
             let x3 = lambda.square().fsub(&x1).fsub(&px);
             self.y[bi] = (lambda * x1.fsub(&x3)).fsub(&y1);
             self.x[bi] = x3;
-        }
+        });
         self.batch.clear();
         self.epoch = self.epoch.wrapping_add(1).max(1);
     }
