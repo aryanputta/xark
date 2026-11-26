@@ -157,6 +157,12 @@ pub trait Probe {
     fn cached_gls_g2(&self) -> Option<&BenchResidentB2<'_>> {
         None
     }
+
+    #[cfg(feature = "msm-b-shared-bench")]
+    #[doc(hidden)]
+    fn share_b_scalars(&self) -> bool {
+        false
+    }
 }
 
 impl Probe for () {}
@@ -653,6 +659,26 @@ where
         let shifted_g2 = probe.shifted_g2();
         #[cfg(feature = "msm-g2-shifted-bench")]
         let cached_gls_g2 = probe.cached_gls_g2();
+        #[cfg(feature = "msm-b-shared-bench")]
+        let shared_b_scalars = (probe.share_b_scalars() && !r.is_zero()).then(|| {
+            use rayon::prelude::*;
+            let count = key.b_g1_query.len();
+            assert_eq!(count, key.b_g2_query.len(), "B query length mismatch");
+            assert!(chunk >= count, "shared B scalars require unchunked queries");
+            let mut scalars = zeroize::Zeroizing::new(vec![Scalar::default(); count]);
+            scalars
+                .par_iter_mut()
+                .with_min_len(1 << 12)
+                .zip(&z[..count])
+                .for_each(|(slot, witness)| {
+                    *slot = witness.into_bigint();
+                });
+            scalars
+        });
+        #[cfg(feature = "msm-b-shared-bench")]
+        let b_scalars = shared_b_scalars.as_ref().map(|scalars| scalars.as_slice());
+        #[cfg(not(feature = "msm-b-shared-bench"))]
+        let b_scalars: Option<&[Scalar]> = None;
         rayon::scope(|sc| {
             sc.spawn(|_| {
                 h = Some(
@@ -674,12 +700,20 @@ where
             if !r.is_zero() {
                 sc.spawn(|_| {
                     b1 = Some(time_resident(timings, "msm_b1", || {
+                        if let Some(scalars) = b_scalars {
+                            return crate::msm::msm(&key.b_g1_query, scalars);
+                        }
                         resident_msm(&key.b_g1_query, chunk, &z_sc)
                     }));
                 });
             }
             sc.spawn(|_| {
                 b2 = Some(time_resident(timings, "msm_b2", || {
+                    #[cfg(feature = "msm-g2-shifted-bench")]
+                    let b2_scalars = || match b_scalars {
+                        Some(scalars) => std::borrow::Cow::Borrowed(scalars),
+                        None => std::borrow::Cow::Owned(z_sc(0, key.b_g2_query.len())),
+                    };
                     #[cfg(feature = "msm-g2-shifted-bench")]
                     if let Some(msm) = cached_gls_g2 {
                         assert!(
@@ -691,7 +725,7 @@ where
                             chunk >= bases.len(),
                             "cached GLS requires an unchunked B2 query"
                         );
-                        return msm(bases, &z_sc(0, bases.len()));
+                        return msm(bases, &b2_scalars());
                     }
                     #[cfg(feature = "msm-g2-shifted-bench")]
                     if let Some(table) = shifted_g2 {
@@ -700,7 +734,10 @@ where
                             chunk >= key.b_g2_query.len(),
                             "shifted B2 requires an unchunked query"
                         );
-                        return table.msm(&z_sc(0, key.b_g2_query.len()));
+                        return table.msm(&b2_scalars());
+                    }
+                    if let Some(scalars) = b_scalars {
+                        return crate::msm::msm(&key.b_g2_query, scalars);
                     }
                     resident_msm(&key.b_g2_query, chunk, &z_sc)
                 }));
@@ -715,6 +752,8 @@ where
             }
             sc.spawn(|_| fixed_terms = Some(fixed()));
         });
+        #[cfg(feature = "msm-b-shared-bench")]
+        drop(shared_b_scalars);
         probe.mark("msm+qap_h");
         let h = h.expect("the scope joined the quotient")?;
         let some = |p: Option<G1Projective>| p.expect("the scope joined every MSM");

@@ -375,6 +375,82 @@ fn split_resident_timing_keeps_the_proof_and_reports_tasks() {
     );
 }
 
+#[cfg(feature = "msm-b-shared-bench")]
+#[test]
+fn shared_b_scalars_match_split_cpu_across_distinct_requests() {
+    struct Shared;
+    impl xark_groth16::Probe for Shared {
+        fn share_b_scalars(&self) -> bool {
+            true
+        }
+    }
+
+    let program = R1csProgram {
+        field: FieldSpec::bn254(),
+        variables: [
+            (1, Visibility::Private),
+            (2, Visibility::Private),
+            (3, Visibility::Public),
+        ]
+        .into_iter()
+        .map(|(id, visibility)| Variable {
+            id,
+            name: format!("v{id}"),
+            visibility,
+        })
+        .collect(),
+        constraints: vec![R1csConstraint::general(
+            0,
+            LinearCombination::var(1),
+            LinearCombination::var(2),
+            LinearCombination::var(3),
+            "",
+        )],
+    };
+    let assign =
+        |x: u64, y: u64| BTreeMap::from([(1, Fr::from(x)), (2, Fr::from(y)), (3, Fr::from(x * y))]);
+    let (key, vk) = ArkG16::circuit_specific_setup(
+        XarkCircuit::for_proving_preminimized(program.clone(), assign(6, 7)),
+        &mut ChaCha20Rng::seed_from_u64(93),
+    )
+    .unwrap();
+    let src = ProgramSource::new(&program);
+    let config = ProverConfig {
+        merge_below: 0,
+        ..ProverConfig::default()
+    };
+    let mut candidate_key = InMemoryPk::new(&key);
+    for (x, y, r) in [(6, 7, 11), (2, 21, 13), (3, 14, 0)] {
+        let z = src.layout().assignment_from_map(&assign(x, y));
+        let (r, s) = (Fr::from(r as u64), Fr::from(17u64));
+        let expected = xark_groth16::prove_with_randomness(
+            &src,
+            &z,
+            &mut InMemoryPk::new(&key),
+            r,
+            s,
+            &config,
+            &mut (),
+        )
+        .unwrap();
+        let proof = xark_groth16::prove_with_randomness(
+            &src,
+            &z,
+            &mut candidate_key,
+            r,
+            s,
+            &config,
+            &mut Shared,
+        )
+        .unwrap();
+        assert_eq!(proof, expected);
+        for proof in [&expected, &proof] {
+            assert!(ArkG16::verify(&vk, &[Fr::from(42u64)], proof).unwrap());
+            assert!(!ArkG16::verify(&vk, &[Fr::from(43u64)], proof).unwrap());
+        }
+    }
+}
+
 #[test]
 fn proof_is_byte_identical_to_arkworks_and_verifies() {
     for seed in 20..24u64 {

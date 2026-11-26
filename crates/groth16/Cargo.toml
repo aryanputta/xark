@@ -13,6 +13,7 @@ rust-version.workspace = true
 [features]
 msm-g2-endpoint-bench = []
 msm-g2-shifted-bench = []
+msm-b-shared-bench = ["dep:zeroize"]
 
 [dependencies]
 # Kept explicit for default-features = false; bump on release.
@@ -30,6 +31,7 @@ rand = "0.8"
 rand_chacha = { version = "0.3", default-features = false }
 ark-poly = { version = "0.6", default-features = false, features = ["std"] }
 rayon = "1"
+zeroize = { version = "1", optional = true }
 
 [dev-dependencies]
 xark-prover = { path = "../prover" }

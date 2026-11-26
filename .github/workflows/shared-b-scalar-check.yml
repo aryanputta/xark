@@ -1,0 +1,29 @@
+name: Shared B scalar Linux correctness
+
+on:
+  push:
+    branches: [perf/request-local-b-scalars]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_TERM_COLOR: never
+      RAYON_NUM_THREADS: 2
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all -- --check
+      - name: Test full proofs on source-generated inputs and check the benchmark
+        run: |
+          features=msm-b-shared-bench,msm-g2-shifted-bench,msm-g2-endpoint-bench
+          cargo test --locked --profile ci -p xark-groth16 --features "$features" --test prover
+          cargo clippy --locked -p xark-groth16 --features "$features" --test prover --example bench_prove -- -D warnings
+      - name: Check normal feature configuration
+        run: cargo check --locked -p xark-groth16 --example bench_prove

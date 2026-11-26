@@ -58,6 +58,8 @@
 //! fixture against exact division before timing.
 //! In `warm`, `BENCH_G2_CACHED_GLS=1` uses that fixed-limb path for complete
 //! split resident CPU proofs with `--features msm-g2-shifted-bench`.
+//! `BENCH_SHARED_B_SCALARS=1` with `msm-b-shared-bench` shares a canonical
+//! scalar vector across the two unchunked B queries for one CPU proof.
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
 //! Arkworks reference sums for a same-input benchmark. Use reproducible test
 //! fixtures and keep the witness-bearing export in local scratch storage.
@@ -227,6 +229,8 @@ struct ResidentProofProbe<'a> {
     shifted: Option<&'a xark_groth16::msm::shifted::ShiftedBases<'a>>,
     #[cfg(feature = "msm-g2-shifted-bench")]
     cached_gls: Option<&'a xark_groth16::prover::BenchResidentB2<'a>>,
+    #[cfg(feature = "msm-b-shared-bench")]
+    share_b_scalars: bool,
 }
 
 impl Probe for ResidentProofProbe<'_> {
@@ -243,6 +247,11 @@ impl Probe for ResidentProofProbe<'_> {
     fn cached_gls_g2(&self) -> Option<&xark_groth16::prover::BenchResidentB2<'_>> {
         self.cached_gls
     }
+
+    #[cfg(feature = "msm-b-shared-bench")]
+    fn share_b_scalars(&self) -> bool {
+        self.share_b_scalars
+    }
 }
 
 struct TaskSpan {
@@ -258,6 +267,8 @@ struct ProfiledCpu<'a, P> {
     shifted: Option<&'a xark_groth16::msm::shifted::ShiftedBases<'a>>,
     #[cfg(feature = "msm-g2-shifted-bench")]
     cached_gls: Option<&'a xark_groth16::prover::BenchResidentB2<'a>>,
+    #[cfg(feature = "msm-b-shared-bench")]
+    share_b_scalars: bool,
 }
 
 impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
@@ -286,6 +297,8 @@ impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
                     shifted: self.shifted,
                     #[cfg(feature = "msm-g2-shifted-bench")]
                     cached_gls: self.cached_gls,
+                    #[cfg(feature = "msm-b-shared-bench")]
+                    share_b_scalars: self.share_b_scalars,
                 },
             );
         };
@@ -311,6 +324,8 @@ impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
                 shifted: self.shifted,
                 #[cfg(feature = "msm-g2-shifted-bench")]
                 cached_gls: self.cached_gls,
+                #[cfg(feature = "msm-b-shared-bench")]
+                share_b_scalars: self.share_b_scalars,
             },
         )?;
         let mut spans = spans.into_inner().unwrap();
@@ -447,6 +462,13 @@ fn main() {
         "BENCH_G2_SPARSE_ENDOMORPHISM requires the msm-g2-endpoint-bench feature"
     );
     let mode = args[1].as_str();
+    let share_b_scalars = match std::env::var("BENCH_SHARED_B_SCALARS").as_deref() {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(value @ ("0" | "1")) if cfg!(feature = "msm-b-shared-bench") && mode == "warm" => {
+            value == "1"
+        }
+        _ => panic!("BENCH_SHARED_B_SCALARS requires warm mode, msm-b-shared-bench, and 0 or 1"),
+    };
     assert!(
         std::env::var_os("BENCH_G2_CACHED_GLS").is_none()
             || (cfg!(feature = "msm-g2-shifted-bench") && mode == "warm"),
@@ -726,9 +748,24 @@ fn main() {
             }
         });
         #[cfg(feature = "msm-g2-shifted-bench")]
-        let use_probe = profile || shifted.is_some() || cached_gls_msm.is_some();
+        let use_probe = profile || shifted.is_some() || cached_gls_msm.is_some() || share_b_scalars;
         #[cfg(not(feature = "msm-g2-shifted-bench"))]
-        let use_probe = profile;
+        let use_probe = profile || share_b_scalars;
+        #[cfg(feature = "msm-b-shared-bench")]
+        {
+            if share_b_scalars {
+                assert_eq!(std::env::var("BENCH_WARM_BACKEND").as_deref(), Ok("cpu"));
+                assert!(
+                    pk.a_query.len() >= cfg.merge_below,
+                    "shared B scalars require split proving"
+                );
+                assert!(
+                    cfg.msm_chunk >= pk.b_g2_query.len(),
+                    "shared B scalars require unchunked queries"
+                );
+            }
+            eprintln!("bench shared B scalars: {}", u8::from(share_b_scalars));
+        }
         let mut provers: Vec<Box<dyn Prover + '_>> = Vec::new();
         match std::env::var("BENCH_WARM_BACKEND").as_deref() {
             Ok("both") | Err(std::env::VarError::NotPresent) => {
@@ -748,6 +785,8 @@ fn main() {
                 cached_gls: cached_gls_msm
                     .as_ref()
                     .map(|msm| msm as &xark_groth16::prover::BenchResidentB2<'_>),
+                #[cfg(feature = "msm-b-shared-bench")]
+                share_b_scalars,
             }));
         } else {
             provers.push(Box::new(cpu));
@@ -785,14 +824,16 @@ fn main() {
                 }
             );
         }
-        let samples: Vec<_> = provers
+        let batches: Vec<_> = provers
             .iter_mut()
             .map(|p| {
-                for _ in 0..warmups {
-                    check_witness();
-                    prove_with_rng(&mut **p, &src, &z, &mut rng).expect("warm up prover");
-                }
-                (0..runs)
+                let warmup_proofs = (0..warmups)
+                    .map(|_| {
+                        check_witness();
+                        prove_with_rng(&mut **p, &src, &z, &mut rng).expect("warm up prover")
+                    })
+                    .collect::<Vec<_>>();
+                let samples = (0..runs)
                     .map(|_| {
                         let t = Instant::now();
                         check_witness();
@@ -801,13 +842,17 @@ fn main() {
                             prove_with_rng(&mut **p, &src, &z, &mut rng).expect("measure proof");
                         (t.elapsed().as_secs_f64(), proof, checked_in)
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                (warmup_proofs, samples)
             })
             .collect();
         // Verify after all timed batches so pairings cannot affect the samples.
         // Reject the batch before printing any timings if any proof fails.
-        for (prover, batch) in provers.iter().zip(&samples) {
-            for (index, (_, proof, _)) in batch.iter().enumerate() {
+        for (prover, (warmup_proofs, batch)) in provers.iter().zip(&batches) {
+            let proofs = warmup_proofs
+                .iter()
+                .chain(batch.iter().map(|(_, proof, _)| proof));
+            for (index, proof) in proofs.enumerate() {
                 let ark_proof: ark_groth16::Proof<Bn254> = checked_arkworks_encoding(proof);
                 let ark_valid =
                     Groth16::<Bn254>::verify_with_processed_vk(&prepared_vk, public, &ark_proof)
@@ -820,7 +865,7 @@ fn main() {
                     prover.name(),
                     index + 1
                 );
-                if let Some(changed) = changed_public_hash.as_ref().filter(|_| index == 0) {
+                if let Some(changed) = changed_public_hash.as_ref().filter(|_| index == warmups) {
                     let changed = std::slice::from_ref(changed);
                     let ark_accepts = Groth16::<Bn254>::verify_with_processed_vk(
                         &prepared_vk,
@@ -837,6 +882,12 @@ fn main() {
                     );
                 }
             }
+            eprintln!(
+                "warm proofs verified by Arkworks and Xark: {} warmups={} measured={}",
+                prover.name(),
+                warmup_proofs.len(),
+                batch.len()
+            );
         }
         if changed_public_hash.is_some() {
             println!("changed statement rejected by Arkworks and Xark for each backend");
@@ -844,12 +895,12 @@ fn main() {
         for i in 0..runs {
             let line: Vec<String> = provers
                 .iter()
-                .zip(&samples)
-                .map(|(p, batch)| format!("{} {:.6}s", p.name(), batch[i].0))
+                .zip(&batches)
+                .map(|(p, (_, batch))| format!("{} {:.6}s", p.name(), batch[i].0))
                 .collect();
             println!("warm prove: {}", line.join("  "));
         }
-        for (prover, batch) in provers.iter().zip(&samples) {
+        for (prover, (_, batch)) in provers.iter().zip(&batches) {
             for (_, _, checked_in) in batch {
                 if let Some(elapsed) = checked_in {
                     println!(
