@@ -11,6 +11,7 @@ from model import (
     break_even,
     end_to_end_bound,
     endpoint_batch_inverse,
+    fixed_schedule_join_gain,
     fq2_inverse,
     fq2_mul,
     fq2_square,
@@ -62,6 +63,13 @@ class ExactModelTests(unittest.TestCase):
                 self.assertLessEqual(
                     len(digits), window_cost(254, width, 5406)["windows_upper_bound"]
                 )
+
+    def test_fixed_schedule_join_saturates_at_the_next_task(self):
+        self.assertEqual(fixed_schedule_join_gain(5, 10, 18, Fraction(1, 5)), 0)
+        self.assertEqual(fixed_schedule_join_gain(5, 10, 14, Fraction(2, 5)), 1)
+        self.assertEqual(fixed_schedule_join_gain(5, 10, 2, Fraction(1, 5)), 2)
+        with self.assertRaises(ValueError):
+            fixed_schedule_join_gain(5, 10, 2, Fraction(6, 5))
 
     def test_estimates_do_not_mix_setup_and_repeated_cost(self):
         self.assertEqual(break_even(10, 3), 4)

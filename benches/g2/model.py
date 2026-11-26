@@ -101,3 +101,13 @@ def end_to_end_bound(serial_fraction, local_speedup):
     if not 0 <= p <= 1 or s < 1:
         raise ValueError("invalid serialized fraction or speedup")
     return 1 / (1 - p + p / s)
+
+
+def fixed_schedule_join_gain(start, duration, other_end, fractional_reduction):
+    """Estimate join savings when B2 shortens and all observed task starts are fixed."""
+    reduction = Fraction(fractional_reduction)
+    if min(start, duration, other_end) < 0 or not 0 <= reduction <= 1:
+        raise ValueError("expected nonnegative times and a reduction in [0, 1]")
+    end = start + duration
+    updated_end = end - duration * reduction
+    return max(end, other_end) - max(updated_end, other_end)

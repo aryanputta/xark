@@ -58,3 +58,16 @@ PipeMSM implements bucket segmentation and scheduling for a BLS12-377 FPGA pipel
 ## Exact reference models
 
 `model.py` uses integer arithmetic for the BN254 base and scalar moduli. It checks `REDC(T)` for `T < pR` and computes the bound of five products for canonical residues at `R=2²⁵⁶`. This is an end-of-reduction bound. Carry handling at each intermediate limb still needs its own proof and tests. It also checks signed-radix reconstruction, affine/projective coordinate payload estimates, the `3(n−1)` multiplication count for a nonempty endpoint batch inverse, exact Fq2 identities, break-even from positive recurring savings, and wall-time Amdahl limits. The Python model supplements independent Rust field and group tests.
+
+## B2 completion and the resident join
+
+The reconstructed task archive contains 15 checked proofs per workload and thread setting. At fixed recorded start times, shortening B2 only removes the portion of its duration that lies beyond the last finishing profiled peer. The replay gives these medians across the observed runs.
+
+| Worker budget and workload | Median observed B2 duration | Modeled join reduction with B2 20% shorter | Proofs with any modeled reduction |
+| --- | ---: | ---: | ---: |
+| One worker, escrow | 177.975 ms | 0 ms | 0/15 |
+| One worker, withdrawal | 135.135 ms | 0 ms | 0/15 |
+| Two workers, escrow | 309.777 ms | 26.253 ms | 15/15 |
+| Two workers, withdrawal | 249.894 ms | 0 ms | 4/15 |
+
+Both guest logical CPUs were reported as SMT siblings. The replay freezes task launches and other durations. Earlier completion can change Rayon queueing and CPU contention, including at one worker where a later task might also start sooner. It omits unprofiled work and says nothing about an achieved proof speedup. Use the timing of both B2 finish and the resident join when testing scheduling on distinct cores.

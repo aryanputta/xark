@@ -4,6 +4,7 @@
 import argparse
 from collections import defaultdict
 import csv
+from fractions import Fraction
 import hashlib
 import json
 import math
@@ -11,6 +12,8 @@ from pathlib import Path, PurePosixPath
 import re
 import statistics
 import tarfile
+
+from model import fixed_schedule_join_gain
 
 # These are the downloaded Colab receipts, not interchangeable with new runs.
 ARCHIVES = {
@@ -233,7 +236,8 @@ def reconstruct(downloads, output):
             )
         )
     finishes = defaultdict(lambda: defaultdict(int))
-    for (member, _), items in tasks.items():
+    join_replay = defaultdict(list)
+    for (member, sample), items in sorted(tasks.items()):
         top_level = [
             row
             for row in items
@@ -241,6 +245,31 @@ def reconstruct(downloads, output):
         ]
         last = max(top_level, key=lambda row: row["start_ns"] + row["duration"])
         finishes[member][last["metric"]] += 1
+        b2 = next(row for row in top_level if row["metric"] == "msm_b2")
+        other_end = max(
+            row["start_ns"] + row["duration"]
+            for row in top_level
+            if row["metric"] != "msm_b2"
+        )
+        join_replay[member].append(
+            {
+                "sample": sample,
+                "b2_start_ns": b2["start_ns"],
+                "b2_duration_ns": b2["duration"],
+                "other_task_end_ns": other_end,
+                "projected_join_gain_ns": {
+                    str(percent): int(
+                        fixed_schedule_join_gain(
+                            b2["start_ns"],
+                            b2["duration"],
+                            other_end,
+                            Fraction(percent, 100),
+                        )
+                    )
+                    for percent in (20, 40, 100)
+                },
+            }
+        )
 
     output.mkdir(mode=0o700)
     with (output / "samples.csv").open("w", newline="") as file:
@@ -253,6 +282,7 @@ def reconstruct(downloads, output):
                 "archives": inputs,
                 "summary": summary,
                 "last_profiled_top_level_task": finishes,
+                "fixed_task_start_b2_join_replay": join_replay,
                 "interpretation": "These are archived observations with differing timing scopes. See the decision log before comparing them.",
             },
             indent=2,
