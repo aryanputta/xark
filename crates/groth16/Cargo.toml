@@ -29,6 +29,7 @@ rayon = "1"
 
 [dev-dependencies]
 xark-prover = { path = "../prover" }
+zeroize = "1"
 ark-poly = { version = "0.6", default-features = false, features = ["std", "parallel"] }
 ark-relations = { version = "0.6", default-features = false, features = ["std"] }
 ark-snark.workspace = true

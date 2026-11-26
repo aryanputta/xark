@@ -1,0 +1,21 @@
+name: Verified upstream request baseline
+
+on:
+  push:
+    branches: [bench/verified-upstream-requests]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all -- --check
+      - run: cargo test --locked --profile ci -p xark-groth16 --test prover
+      - run: cargo clippy --locked -p xark-groth16 --example bench_verified_warm -- -D warnings
+      - run: cargo build --locked --profile ci -p xark-groth16 --example bench_verified_warm

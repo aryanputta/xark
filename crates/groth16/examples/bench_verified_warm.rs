@@ -9,6 +9,9 @@ use ark_groth16::{Groth16, prepare_verifying_key};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use xark_groth16::{BytecodeSource, ConstraintSource, Cpu, InMemoryPk, ProverConfig};
 
+#[path = "support/upstream_requests.rs"]
+mod upstream_requests;
+
 fn statement(directory: &Path, file: &str) -> Fr {
     let file = std::fs::File::open(directory.join(file)).expect("open statement");
     let fields: BTreeMap<String, String> = serde_json::from_reader(file).expect("read statement");
@@ -49,6 +52,10 @@ fn first_unsatisfied_compiled(src: &BytecodeSource, z: &[Fr]) -> Option<usize> {
 
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|mode| mode == "warm-requests") {
+        upstream_requests::run(&args[1..]);
+        return;
+    }
     let [mode, circuit, key, inputs, samples, warmups] = args.as_slice() else {
         panic!("usage: bench_verified_warm warm CIRCUIT KEY INPUTS SAMPLES WARMUPS");
     };
