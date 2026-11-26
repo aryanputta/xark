@@ -14,6 +14,7 @@ fixture_hash=82caa7cee2b155afc2bd32cdc9661ba8cfb758888f4837bf9d6af31eb05c36a7
 [[ -f "$archive" ]] || { echo "Fixture archive was not uploaded" >&2; exit 1; }
 [[ "$samples" =~ ^[0-9]+$ && "$samples" -ge 30 ]] || { echo "At least 30 samples required" >&2; exit 1; }
 printf '%s  %s\n' "$fixture_hash" "$archive" | sha256sum --check --status
+archive=$(cd "$(dirname "$archive")" && pwd)/$(basename "$archive")
 
 mkdir "$out"
 out=$(cd "$out" && pwd)
