@@ -539,6 +539,13 @@ def run_suite(args):
             == files["node"],
             "the pinned node binary must be the node found on PATH",
         )
+    if args.strict_contention:
+        try:
+            processes(os.getpgrp(), args.contention_percent)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError(
+                "host process monitoring unavailable; strict run did not start"
+            ) from exc
     output = args.output.resolve()
     output.mkdir(mode=0o700)
     hardware = host()
