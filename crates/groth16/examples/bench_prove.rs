@@ -9,6 +9,7 @@
 //! bench_prove ark    <circuit.xbc> <pk.bin> <inputs.json> [--reduced]
 //! bench_prove stream <circuit.xbc> <pk.bin> <inputs.json> [--source xbc|min] [--tile N] [--chunk N]
 //! BENCH_TIME=1 bench_prove warm <circuit.xbc> <reduced pk.bin> <inputs.json> [proofs] [warmups]
+//! BENCH_TIME=1 bench_prove warm-requests <circuit.xbc> <reduced pk.bin> <cpu|gls> <concurrency> <requests> <fixture-dir>...
 //! BENCH_TIME=1 bench_prove query-msm <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-xark <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-b2-shifted <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
@@ -58,6 +59,9 @@
 //! fixture against exact division before timing.
 //! In `warm`, `BENCH_G2_CACHED_GLS=1` uses that fixed-limb path for complete
 //! split resident CPU proofs with `--features msm-g2-shifted-bench`.
+//! Use `check-g2-subgroup PROVING_KEY PAIRS` to compare public-key validation
+//! algorithms. `BENCH_G2_SIGNED_SUBGROUP=1` selects signed validation in cached
+//! GLS warm proofs, including all on-curve and subgroup checks.
 //! `BENCH_SHARED_B_SCALARS=1` with `msm-b-shared-bench` shares a canonical
 //! scalar vector across the two unchunked B queries for one CPU proof.
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
@@ -91,6 +95,9 @@ mod arkworks_prover;
 mod iden3;
 #[path = "support/query_msm.rs"]
 mod query_msm;
+#[cfg(feature = "msm-g2-shifted-bench")]
+#[path = "support/resident_requests.rs"]
+mod resident_requests;
 use ark::{ArkCircuit, convert};
 use arkworks_prover::Arkworks;
 
@@ -342,6 +349,14 @@ fn arg_val(args: &[String], k: &str) -> Option<String> {
 }
 
 fn solve(xbc: &[u8], inputs_path: &str) -> BTreeMap<VarId, Fr> {
+    solve_with_prepared(xbc, inputs_path, None)
+}
+
+fn solve_with_prepared(
+    xbc: &[u8],
+    inputs_path: &str,
+    prepared: Option<&xark_ir::function_decode::PreparedStreamSolver>,
+) -> BTreeMap<VarId, Fr> {
     let json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(inputs_path).unwrap()).unwrap();
     let names: BTreeMap<String, String> = json
@@ -350,10 +365,16 @@ fn solve(xbc: &[u8], inputs_path: &str) -> BTreeMap<VarId, Fr> {
         .iter()
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
         .collect();
-    let vars = xark_ir::function_decode::decode_input_vars(xbc).unwrap();
-    let ids = xark_prover::resolve_input_ids(&vars, &names).unwrap();
-    drop(vars);
-    let (fp, _) = xark_ir::function_decode::stream_solve_verify(xbc, &ids).unwrap();
+    let (fp, _) = if let Some(prepared) = prepared {
+        let ids = xark_prover::resolve_input_ids(prepared.input_vars(), &names).unwrap();
+        prepared.solve_verify(&ids)
+    } else {
+        let vars = xark_ir::function_decode::decode_input_vars(xbc).unwrap();
+        let ids = xark_prover::resolve_input_ids(&vars, &names).unwrap();
+        drop(vars);
+        xark_ir::function_decode::stream_solve_verify(xbc, &ids)
+    }
+    .unwrap();
     xark_prover::lower_witness(&fp)
 }
 
@@ -401,6 +422,15 @@ fn main() {
         TRACK.store(false, Relaxed);
     }
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|mode| mode == "warm-requests") {
+        #[cfg(feature = "msm-g2-shifted-bench")]
+        {
+            resident_requests::run(&args[2..]);
+            return;
+        }
+        #[cfg(not(feature = "msm-g2-shifted-bench"))]
+        panic!("warm-requests requires the msm-g2-shifted-bench feature");
+    }
     if args
         .get(1)
         .is_some_and(|mode| mode == "query-msm-g2-factorial")
@@ -462,6 +492,18 @@ fn main() {
         "BENCH_G2_SPARSE_ENDOMORPHISM requires the msm-g2-endpoint-bench feature"
     );
     let mode = args[1].as_str();
+    let signed_subgroup = match std::env::var("BENCH_G2_SIGNED_SUBGROUP").as_deref() {
+        Ok("0") | Err(std::env::VarError::NotPresent) => false,
+        Ok("1") => true,
+        _ => panic!("BENCH_G2_SIGNED_SUBGROUP must be 0 or 1"),
+    };
+    assert!(
+        !signed_subgroup
+            || (cfg!(feature = "msm-g2-shifted-bench")
+                && mode == "warm"
+                && std::env::var("BENCH_G2_CACHED_GLS").as_deref() == Ok("1")),
+        "signed subgroup validation requires cached GLS warm mode"
+    );
     let share_b_scalars = match std::env::var("BENCH_SHARED_B_SCALARS").as_deref() {
         Err(std::env::VarError::NotPresent) => false,
         Ok(value @ ("0" | "1")) if cfg!(feature = "msm-b-shared-bench") && mode == "warm" => {
@@ -475,6 +517,10 @@ fn main() {
         "BENCH_G2_CACHED_GLS requires warm mode and the msm-g2-shifted-bench feature"
     );
     match mode {
+        "check-g2-subgroup" => {
+            query_msm::cached_gls_b2::run_subgroup_pairs(&args[2..]);
+            return;
+        }
         "query-msm" | "query-msm-xark" => {
             query_msm::run(&args[2..], mode == "query-msm-xark");
             return;
@@ -728,14 +774,18 @@ fn main() {
                     "cached GLS B2 needs fixture statements"
                 );
                 let started = Instant::now();
-                let table = query_msm::cached_gls_b2::ResidentCachedGls::new(&pk.b_g2_query)
-                    .expect("validate and prepare cached GLS B2 table");
+                let table = query_msm::cached_gls_b2::ResidentCachedGls::new(
+                    &pk.b_g2_query,
+                    signed_subgroup,
+                )
+                .expect("validate and prepare cached GLS B2 table");
                 eprintln!(
                     "bench g2 cached GLS: 1 rounding=fixed-limb subgroup_points={} setup_ns={} table_payload_bytes={}",
                     pk.b_g2_query.len(),
                     started.elapsed().as_nanos(),
                     table.payload_bytes()
                 );
+                eprintln!("bench g2 signed subgroup: {}", u8::from(signed_subgroup));
                 Some(table)
             }
             Ok("0") | Err(std::env::VarError::NotPresent) => None,

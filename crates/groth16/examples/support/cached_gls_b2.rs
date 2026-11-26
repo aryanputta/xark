@@ -7,10 +7,11 @@ use std::time::{Duration, Instant};
 
 use ark_bn254::{Config, Fr, G2Affine, G2Projective, g2};
 use ark_ec::{AffineRepr, VariableBaseMSM, bn::BnConfig, scalar_mul::glv::GLVConfig};
-use ark_ff::{BigInt as ArkBigInt, BigInteger, Field, PrimeField};
+use ark_ff::{AdditiveGroup, BigInt as ArkBigInt, BigInteger, Field, PrimeField, Zero};
 use num_bigint::{BigInt, Sign};
 use rayon::prelude::*;
 use xark_groth16::msm::{self, Scalar};
+use zeroize::Zeroizing;
 
 const IMAGES: usize = 4;
 const TABLE_CAP_BYTES: usize = 4 * 1024 * 1024;
@@ -184,12 +185,19 @@ fn requires_split(scalar: &Scalar) -> bool {
     negative.num_bits() > 128
 }
 
-fn images(point: &G2Affine) -> [G2Affine; IMAGES] {
+fn frobenius(point: &G2Affine) -> G2Affine {
+    if point.is_zero() {
+        return *point;
+    }
     let mut x = point.x;
     let mut y = point.y;
     x.frobenius_map_in_place(1);
     y.frobenius_map_in_place(1);
-    let psi = G2Affine::new_unchecked(x * Config::TWIST_MUL_BY_Q_X, y * Config::TWIST_MUL_BY_Q_Y);
+    G2Affine::new_unchecked(x * Config::TWIST_MUL_BY_Q_X, y * Config::TWIST_MUL_BY_Q_Y)
+}
+
+fn images(point: &G2Affine) -> [G2Affine; IMAGES] {
+    let psi = frobenius(point);
     // On the prime-order subgroup, psi^2 = -phi. Both maps preserve infinity.
     [
         *point,
@@ -199,10 +207,60 @@ fn images(point: &G2Affine) -> [G2Affine; IMAGES] {
     ]
 }
 
-fn check_subgroup(bases: &[G2Affine]) -> Result<(), usize> {
+const SIX_U_SQUARED: u128 = 6 * (U as u128) * (U as u128);
+
+const fn signed_check_digits() -> [i8; 128] {
+    let mut digits = [0; 128];
+    let mut scalar = SIX_U_SQUARED;
+    let mut i = 0;
+    while scalar != 0 {
+        if scalar & 1 != 0 {
+            if scalar & 3 == 1 {
+                digits[i] = 1;
+                scalar -= 1;
+            } else {
+                digits[i] = -1;
+                scalar += 1;
+            }
+        }
+        scalar >>= 1;
+        i += 1;
+    }
+    digits
+}
+
+const CHECK_DIGITS: [i8; 128] = signed_check_digits();
+const _: () = assert!(CHECK_DIGITS[127] == 1);
+
+// The integer multiplication is valid on the full twist, even for points
+// outside the target subgroup. No scalar reduction or GLV identity is used.
+fn multiply_check_scalar(point: &G2Affine) -> G2Projective {
+    let mut value = G2Projective::from(*point);
+    let negated = -*point;
+    for digit in CHECK_DIGITS[..127].iter().rev() {
+        value.double_in_place();
+        match digit {
+            1 => value += *point,
+            -1 => value += negated,
+            _ => (),
+        }
+    }
+    value
+}
+
+fn signed_subgroup(point: &G2Affine) -> bool {
+    point.is_zero() || multiply_check_scalar(point).eq(&frobenius(point))
+}
+
+fn check_subgroup(bases: &[G2Affine], signed: bool) -> Result<(), usize> {
+    let check = if signed {
+        signed_subgroup
+    } else {
+        G2Affine::is_in_correct_subgroup_assuming_on_curve
+    };
     match bases
         .par_iter()
-        .position_any(|p| !p.is_on_curve() || !p.is_in_correct_subgroup_assuming_on_curve())
+        .position_any(|p| !p.is_on_curve() || !check(p))
     {
         Some(index) => Err(index),
         None => Ok(()),
@@ -224,22 +282,27 @@ impl CachedImages {
         })
     }
 
-    fn recode<const FIXED: bool>(&self, recoder: &Recoder, scalars: &[Scalar]) -> Vec<Scalar> {
+    fn recode<const FIXED: bool>(
+        &self,
+        recoder: &Recoder,
+        scalars: &[Scalar],
+    ) -> Zeroizing<Box<[Scalar]>> {
         assert_eq!(self.points.len() / IMAGES, scalars.len());
-        let parts: Vec<_> = self
-            .points
-            .par_chunks_exact(IMAGES)
-            .zip(scalars.par_iter())
+        // Put the backing allocation under the wipe guard before copying any
+        // witness-derived values into it, including during Rayon unwinding.
+        let mut parts =
+            Zeroizing::new(vec![Scalar::default(); self.points.len()].into_boxed_slice());
+        parts
+            .par_chunks_exact_mut(IMAGES)
+            .zip(self.points.par_chunks_exact(IMAGES))
+            .zip(scalars)
             .with_min_len(128)
-            .map(|(images, scalar)| {
-                if images[0].is_zero() {
-                    [Scalar::default(); IMAGES]
-                } else {
-                    recoder.encode::<FIXED>(scalar)
+            .for_each(|((out, images), scalar)| {
+                if !images[0].is_zero() {
+                    out.copy_from_slice(&recoder.encode::<FIXED>(scalar));
                 }
-            })
-            .collect();
-        parts.into_flattened()
+            });
+        parts
     }
 }
 
@@ -253,8 +316,8 @@ pub(crate) struct ResidentCachedGls<'a> {
 
 #[cfg(feature = "msm-g2-shifted-bench")]
 impl<'a> ResidentCachedGls<'a> {
-    pub(crate) fn new(bases: &'a [G2Affine]) -> Result<Self, String> {
-        check_subgroup(bases)
+    pub(crate) fn new(bases: &'a [G2Affine], signed: bool) -> Result<Self, String> {
+        check_subgroup(bases, signed)
             .map_err(|index| format!("B2 base {index} is outside the BN254 G2 subgroup"))?;
         let cache = CachedImages::new(bases).map_err(str::to_owned)?;
         Ok(Self {
@@ -275,6 +338,50 @@ impl<'a> ResidentCachedGls<'a> {
         );
         let recoded = self.cache.recode::<true>(&self.recoder, scalars);
         msm::msm::<G2Projective>(&self.cache.points, &recoded)
+    }
+}
+
+pub(crate) fn run_subgroup_pairs(args: &[String]) {
+    let [key, pairs] = args else {
+        panic!("usage: bench_prove check-g2-subgroup PROVING_KEY PAIRS");
+    };
+    let pairs: usize = pairs.parse().expect("number of pairs");
+    assert!(pairs > 0);
+    let key = xark_backend::Groth16Keys::read_proving_key(Path::new(key)).expect("load key");
+    let bases = &key.b_g2_query;
+    assert!(!bases.is_empty(), "empty B2 key");
+    assert!(
+        bases
+            .par_iter()
+            .all(|p| p.is_on_curve() && p.mul_bigint(Fr::MODULUS).is_zero()),
+        "independent full-order reference rejected the B2 key"
+    );
+    println!("G2 full-order reference verified points={}", bases.len());
+    println!(
+        "G2 validation points={} threads={}",
+        bases.len(),
+        rayon::current_num_threads()
+    );
+    for pair in 0..=pairs {
+        let signed_first = pair % 2 == 0;
+        let timed_check = |signed| {
+            let start = Instant::now();
+            let checked = check_subgroup(bases, signed);
+            let elapsed = start.elapsed();
+            assert_eq!(checked, Ok(()));
+            elapsed.as_nanos()
+        };
+        let (binary, signed) = if signed_first {
+            let signed = timed_check(true);
+            (timed_check(false), signed)
+        } else {
+            (timed_check(false), timed_check(true))
+        };
+        if pair > 0 {
+            println!(
+                "G2 validation verified pair={pair} signed_first={signed_first} binary_ns={binary} signed_ns={signed}"
+            );
+        }
     }
 }
 
@@ -301,7 +408,7 @@ pub(crate) fn run<const FIXED: bool>(args: &[String]) {
         super::timed(|| super::load(xbc_path, pk_path, Path::new(directory)));
     let bases = &pk.b_g2_query;
     // The normal trusted proving-key decoder deliberately skips this check.
-    let (subgroup, subgroup_check) = super::timed(|| check_subgroup(bases));
+    let (subgroup, subgroup_check) = super::timed(|| check_subgroup(bases, false));
     if let Err(index) = subgroup {
         panic!("B2 base {index} is outside the BN254 G2 subgroup");
     }
@@ -315,7 +422,8 @@ pub(crate) fn run<const FIXED: bool>(args: &[String]) {
         super::timed(|| CachedImages::new(bases).expect("prepare signed GLS bases"));
     if FIXED {
         assert!(
-            cache.recode::<false>(&recoder, &scalars) == cache.recode::<true>(&recoder, &scalars),
+            cache.recode::<false>(&recoder, &scalars)[..]
+                == cache.recode::<true>(&recoder, &scalars)[..],
             "fixed-width and division recodings differ on the fixture"
         );
     }
@@ -470,7 +578,7 @@ mod tests {
         let bases = (0..65)
             .map(|i| generator.mul_bigint([i]).into_affine())
             .collect::<Vec<_>>();
-        assert_eq!(check_subgroup(&bases), Ok(()));
+        assert_eq!(check_subgroup(&bases, false), Ok(()));
         for base in &bases {
             for (i, image) in images(base).into_iter().enumerate() {
                 assert_eq!(
@@ -488,7 +596,7 @@ mod tests {
         assert_eq!(msm::msm::<G2Projective>(&cache.points, &encoded), expected);
         #[cfg(feature = "msm-g2-shifted-bench")]
         assert_eq!(
-            ResidentCachedGls::new(&bases)
+            ResidentCachedGls::new(&bases, true)
                 .unwrap()
                 .msm(&bases, &scalars),
             expected
@@ -501,7 +609,7 @@ mod tests {
     fn resident_gls_rejects_another_key_buffer() {
         let bases = vec![G2Affine::generator()];
         let other = bases.clone();
-        let table = ResidentCachedGls::new(&bases).unwrap();
+        let table = ResidentCachedGls::new(&bases, false).unwrap();
         let _ = table.msm(&other, &[Scalar::default()]);
     }
 
@@ -521,8 +629,48 @@ mod tests {
             })
             .find(|p| !p.is_in_correct_subgroup_assuming_on_curve())
             .unwrap();
-        assert_eq!(check_subgroup(&[G2Affine::generator(), point]), Err(1));
+        for signed in [false, true] {
+            assert_eq!(
+                check_subgroup(&[G2Affine::generator(), point], signed),
+                Err(1)
+            );
+        }
         #[cfg(feature = "msm-g2-shifted-bench")]
-        assert!(ResidentCachedGls::new(&[G2Affine::generator(), point]).is_err());
+        assert!(ResidentCachedGls::new(&[G2Affine::generator(), point], true).is_err());
+    }
+
+    #[test]
+    fn signed_public_scalar_and_predicate_match_independent_group_checks() {
+        let reconstructed = CHECK_DIGITS.iter().rev().fold(0u128, |n, &digit| {
+            (2 * n).checked_add_signed(i128::from(digit)).unwrap()
+        });
+        assert_eq!(reconstructed, SIX_U_SQUARED);
+        assert_eq!(CHECK_DIGITS.iter().filter(|&&d| d != 0).count(), 40);
+        assert!(CHECK_DIGITS.windows(2).all(|w| w[0] == 0 || w[1] == 0));
+        let scalar = [SIX_U_SQUARED as u64, (SIX_U_SQUARED >> 64) as u64];
+
+        let curve_points = (0..48u64).filter_map(|x| {
+            G2Affine::get_point_from_x_unchecked(Fq2::new(Fq::from(x), Fq::ONE), false)
+        });
+        let subgroup_points = (1..=16).map(|n| G2Affine::generator().mul_bigint([n]).into_affine());
+        let mut outsiders = 0;
+        for p in curve_points
+            .chain(subgroup_points)
+            .chain([G2Affine::identity()])
+        {
+            assert!(p.is_on_curve());
+            let full_order_check = p.mul_bigint(Fr::MODULUS).is_zero();
+            outsiders += usize::from(!full_order_check);
+            assert_eq!(multiply_check_scalar(&p), p.mul_bigint(scalar));
+            assert_eq!(signed_subgroup(&p), full_order_check);
+            assert_eq!(
+                p.is_in_correct_subgroup_assuming_on_curve(),
+                full_order_check
+            );
+        }
+        assert!(outsiders > 0);
+        let off_curve = G2Affine::new_unchecked(Fq2::ZERO, Fq2::ONE);
+        assert!(!off_curve.is_on_curve());
+        assert_eq!(check_subgroup(&[off_curve], true), Err(0));
     }
 }

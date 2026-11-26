@@ -2,7 +2,18 @@ name: Shared B scalar Linux correctness
 
 on:
   push:
-    branches: [perf/request-local-b-scalars, integration/shared-b-scratch-wipe]
+    branches:
+      - perf/request-local-b-scalars
+      - integration/shared-b-scratch-wipe
+      - integration/prepared-shared-b-secure
+      - perf/g2-public-validation
+      - perf/g2-gls-boxed-scratch
+      - test/g2-resident-request-batches
+      - perf/resident-stream-solver
+      - perf/compact-resident-stream-solver
+      - perf/sparse-resident-solver-metadata
+      - feat/prepared-cpu-prover
+      - validation/prepared-decimal-wipe-guard
 
 permissions:
   contents: read
@@ -20,10 +31,14 @@ jobs:
         with:
           components: clippy, rustfmt
       - run: cargo fmt --all -- --check
-      - name: Test Groth16 with shared B scalars and scratch wiping
+      - run: cargo test --locked --profile ci -p xark-ir --lib --test reduced_soundness
+      - run: cargo test --locked --profile ci -p xark-prover --lib
+      - run: cargo clippy --locked --profile ci -p xark-prover -- -D warnings
+      - name: Test prepared and shared B Groth16 paths
         run: |
           features=msm-b-shared-bench,msm-g2-shifted-bench,msm-g2-endpoint-bench
           cargo test --locked --profile ci -p xark-groth16 --features "$features"
+          cargo test --locked --profile ci -p xark-groth16 --features "$features" --example bench_prove
           cargo clippy --locked --profile ci -p xark-groth16 --features "$features" --all-targets -- -D warnings
       - name: Test portable Groth16 without experimental features
         run: |
