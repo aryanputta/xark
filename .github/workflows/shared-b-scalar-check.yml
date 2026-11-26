@@ -11,6 +11,7 @@ on:
       - perf/compact-resident-stream-solver
       - perf/sparse-resident-solver-metadata
       - feat/prepared-cpu-prover
+      - validation/prepared-decimal-wipe-guard
 
 permissions:
   contents: read
@@ -29,6 +30,7 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --all -- --check
       - run: cargo test --locked --profile ci -p xark-ir --lib --test reduced_soundness
+      - run: cargo test --locked --profile ci -p xark-prover --lib
       - run: cargo clippy --locked -p xark-prover -- -D warnings
       - name: Test full proofs on source-generated inputs and check the benchmark
         run: |
