@@ -1753,8 +1753,8 @@ impl crate::interp::Host for Host {
         let intr = self.imports[import as usize].expect("linked");
         // Total intrinsics: every input has outputs satisfying what they emit (a
         // product row, `==`'s is-zero gadget, a booleanity-pinned XOR/OR, a hint the
-        // solver can always compute). Anything else is partial.
-        if !matches!(
+        // solver can always compute). Advice is also exempt from this count.
+        let total_or_advice = matches!(
             intr,
             Intr::Add
                 | Intr::Sub
@@ -1777,7 +1777,9 @@ impl crate::interp::Host for Host {
                 | Intr::Panic
                 | Intr::RequireEq
                 | Intr::InputSchema
-        ) && !(matches!(
+                | Intr::Advice
+        );
+        let guarded_partial = matches!(
             intr,
             Intr::Ult
                 | Intr::HintInverse
@@ -1787,9 +1789,8 @@ impl crate::interp::Host for Host {
                 | Intr::HintModInverse
                 | Intr::HintFakeGlv
                 | Intr::HintSub2
-        ) && !self.guards.is_empty())
-            && intr != Intr::Advice
-        {
+        ) && !self.guards.is_empty();
+        if !(total_or_advice || guarded_partial) {
             self.partial += 1;
         }
         match intr {
