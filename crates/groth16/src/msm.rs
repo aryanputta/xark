@@ -17,6 +17,7 @@ use ark_ec::CurveGroup;
 use ark_ff::{BigInteger, Field, One, PrimeField, Zero};
 use ark_serialize::CanonicalSerialize;
 use rayon::prelude::*;
+use zeroize::Zeroizing;
 
 #[cfg(feature = "msm-g2-shifted-bench")]
 #[doc(hidden)]
@@ -522,7 +523,8 @@ fn pippenger_glv<G: SwCurve>(
     let modulus = Fr::MODULUS;
     let n = entries.len();
     let mut pts = vec![G::Affine::default(); 2 * n];
-    let mut sc = vec![Scalar::default(); 2 * n];
+    // GLV components still encode request scalars after digit recoding.
+    let mut sc = Zeroizing::new(vec![Scalar::default(); 2 * n]);
     pts.par_chunks_mut(2 * 1024)
         .zip(sc.par_chunks_mut(2 * 1024))
         .zip(entries.par_chunks(1024))
@@ -575,7 +577,8 @@ fn pippenger_core<G: SwCurve>(
 
     // Signed digits, computed once, stored window-major (each window pass then
     // streams one contiguous i16 row) with the entry's sign folded in.
-    let mut digits = vec![0i16; windows * n];
+    // Booth digits encode request scalars. Wipe them on return and unwinding.
+    let mut digits = Zeroizing::new(vec![0i16; windows * n]);
     {
         let ptr = DigitPtr(digits.as_mut_ptr());
         entries.par_chunks(4096).enumerate().for_each(|(ci, es)| {
