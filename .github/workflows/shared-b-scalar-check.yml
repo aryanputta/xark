@@ -8,6 +8,7 @@ on:
       - perf/g2-gls-boxed-scratch
       - test/g2-resident-request-batches
       - perf/resident-stream-solver
+      - perf/compact-resident-stream-solver
 
 permissions:
   contents: read
@@ -25,7 +26,7 @@ jobs:
         with:
           components: clippy, rustfmt
       - run: cargo fmt --all -- --check
-      - run: cargo test --locked --profile ci -p xark-ir --test reduced_soundness
+      - run: cargo test --locked --profile ci -p xark-ir --lib --test reduced_soundness
       - name: Test full proofs on source-generated inputs and check the benchmark
         run: |
           features=msm-b-shared-bench,msm-g2-shifted-bench,msm-g2-endpoint-bench
