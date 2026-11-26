@@ -56,6 +56,8 @@
 //! baseline and cached arm are independently checked against Arkworks. The
 //! reciprocal mode replaces BigInt recoding and checks the ordered recoded
 //! fixture against exact division before timing.
+//! In `warm`, `BENCH_G2_CACHED_GLS=1` uses that fixed-limb path for complete
+//! split resident CPU proofs with `--features msm-g2-shifted-bench`.
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
 //! Arkworks reference sums for a same-input benchmark. Use reproducible test
 //! fixtures and keep the witness-bearing export in local scratch storage.
@@ -223,6 +225,8 @@ struct ResidentProofProbe<'a> {
     timings: Option<&'a xark_groth16::prover::ResidentTimingSink<'a>>,
     #[cfg(feature = "msm-g2-shifted-bench")]
     shifted: Option<&'a xark_groth16::msm::shifted::ShiftedBases<'a>>,
+    #[cfg(feature = "msm-g2-shifted-bench")]
+    cached_gls: Option<&'a xark_groth16::prover::BenchResidentB2<'a>>,
 }
 
 impl Probe for ResidentProofProbe<'_> {
@@ -233,6 +237,11 @@ impl Probe for ResidentProofProbe<'_> {
     #[cfg(feature = "msm-g2-shifted-bench")]
     fn shifted_g2(&self) -> Option<&xark_groth16::msm::shifted::ShiftedBases<'_>> {
         self.shifted
+    }
+
+    #[cfg(feature = "msm-g2-shifted-bench")]
+    fn cached_gls_g2(&self) -> Option<&xark_groth16::prover::BenchResidentB2<'_>> {
+        self.cached_gls
     }
 }
 
@@ -247,6 +256,8 @@ struct ProfiledCpu<'a, P> {
     profiles: Option<&'a mut Vec<Vec<TaskSpan>>>,
     #[cfg(feature = "msm-g2-shifted-bench")]
     shifted: Option<&'a xark_groth16::msm::shifted::ShiftedBases<'a>>,
+    #[cfg(feature = "msm-g2-shifted-bench")]
+    cached_gls: Option<&'a xark_groth16::prover::BenchResidentB2<'a>>,
 }
 
 impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
@@ -273,6 +284,8 @@ impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
                     timings: None,
                     #[cfg(feature = "msm-g2-shifted-bench")]
                     shifted: self.shifted,
+                    #[cfg(feature = "msm-g2-shifted-bench")]
+                    cached_gls: self.cached_gls,
                 },
             );
         };
@@ -296,6 +309,8 @@ impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
                 timings: Some(&record),
                 #[cfg(feature = "msm-g2-shifted-bench")]
                 shifted: self.shifted,
+                #[cfg(feature = "msm-g2-shifted-bench")]
+                cached_gls: self.cached_gls,
             },
         )?;
         let mut spans = spans.into_inner().unwrap();
@@ -432,6 +447,11 @@ fn main() {
         "BENCH_G2_SPARSE_ENDOMORPHISM requires the msm-g2-endpoint-bench feature"
     );
     let mode = args[1].as_str();
+    assert!(
+        std::env::var_os("BENCH_G2_CACHED_GLS").is_none()
+            || (cfg!(feature = "msm-g2-shifted-bench") && mode == "warm"),
+        "BENCH_G2_CACHED_GLS requires warm mode and the msm-g2-shifted-bench feature"
+    );
     match mode {
         "query-msm" | "query-msm-xark" => {
             query_msm::run(&args[2..], mode == "query-msm-xark");
@@ -670,7 +690,43 @@ fn main() {
             _ => panic!("BENCH_G2_SHIFTED must be 0 or 1"),
         };
         #[cfg(feature = "msm-g2-shifted-bench")]
-        let use_probe = profile || shifted.is_some();
+        let cached_gls = match std::env::var("BENCH_G2_CACHED_GLS").as_deref() {
+            Ok("1") => {
+                assert_eq!(std::env::var("BENCH_WARM_BACKEND").as_deref(), Ok("cpu"));
+                assert!(
+                    shifted.is_none(),
+                    "cached GLS and shifted B2 are separate modes"
+                );
+                assert!(
+                    pk.a_query.len() >= cfg.merge_below,
+                    "cached GLS B2 uses split MSMs"
+                );
+                assert!(
+                    changed_public_hash.is_some(),
+                    "cached GLS B2 needs fixture statements"
+                );
+                let started = Instant::now();
+                let table = query_msm::cached_gls_b2::ResidentCachedGls::new(&pk.b_g2_query)
+                    .expect("validate and prepare cached GLS B2 table");
+                eprintln!(
+                    "bench g2 cached GLS: 1 rounding=fixed-limb subgroup_points={} setup_ns={} table_payload_bytes={}",
+                    pk.b_g2_query.len(),
+                    started.elapsed().as_nanos(),
+                    table.payload_bytes()
+                );
+                Some(table)
+            }
+            Ok("0") | Err(std::env::VarError::NotPresent) => None,
+            _ => panic!("BENCH_G2_CACHED_GLS must be 0 or 1"),
+        };
+        #[cfg(feature = "msm-g2-shifted-bench")]
+        let cached_gls_msm = cached_gls.as_ref().map(|table| {
+            move |bases: &[ark_bn254::G2Affine], scalars: &[xark_groth16::msm::Scalar]| {
+                table.msm(bases, scalars)
+            }
+        });
+        #[cfg(feature = "msm-g2-shifted-bench")]
+        let use_probe = profile || shifted.is_some() || cached_gls_msm.is_some();
         #[cfg(not(feature = "msm-g2-shifted-bench"))]
         let use_probe = profile;
         let mut provers: Vec<Box<dyn Prover + '_>> = Vec::new();
@@ -688,6 +744,10 @@ fn main() {
                 profiles: profile.then_some(&mut profiles),
                 #[cfg(feature = "msm-g2-shifted-bench")]
                 shifted: shifted.as_ref(),
+                #[cfg(feature = "msm-g2-shifted-bench")]
+                cached_gls: cached_gls_msm
+                    .as_ref()
+                    .map(|msm| msm as &xark_groth16::prover::BenchResidentB2<'_>),
             }));
         } else {
             provers.push(Box::new(cpu));

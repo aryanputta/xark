@@ -12,7 +12,7 @@ use xark_groth16::msm::{self, Scalar, SwCurve};
 use xark_groth16::{BytecodeSource, ConstraintSource, ProvingKey};
 
 #[path = "cached_gls_b2.rs"]
-mod cached_gls_b2;
+pub(super) mod cached_gls_b2;
 
 pub(super) use cached_gls_b2::run as run_cached_gls_b2;
 

@@ -132,6 +132,10 @@ impl From<PkError> for ProveError {
 /// Optional timing hook for overlapping tasks in the split resident CPU prover.
 pub type ResidentTimingSink<'a> = dyn Fn(&'static str, Instant, Duration) + Sync + 'a;
 
+#[cfg(feature = "msm-g2-shifted-bench")]
+#[doc(hidden)]
+pub type BenchResidentB2<'a> = dyn Fn(&[G2Affine], &[Scalar]) -> G2Projective + Sync + 'a;
+
 /// Phase hook for instrumentation (timing / peak-memory sampling).
 pub trait Probe {
     fn mark(&mut self, _phase: &'static str) {}
@@ -145,6 +149,12 @@ pub trait Probe {
     #[cfg(feature = "msm-g2-shifted-bench")]
     #[doc(hidden)]
     fn shifted_g2(&self) -> Option<&crate::msm::shifted::ShiftedBases<'_>> {
+        None
+    }
+
+    #[cfg(feature = "msm-g2-shifted-bench")]
+    #[doc(hidden)]
+    fn cached_gls_g2(&self) -> Option<&BenchResidentB2<'_>> {
         None
     }
 }
@@ -641,6 +651,8 @@ where
         let timings = probe.resident_timings();
         #[cfg(feature = "msm-g2-shifted-bench")]
         let shifted_g2 = probe.shifted_g2();
+        #[cfg(feature = "msm-g2-shifted-bench")]
+        let cached_gls_g2 = probe.cached_gls_g2();
         rayon::scope(|sc| {
             sc.spawn(|_| {
                 h = Some(
@@ -668,6 +680,19 @@ where
             }
             sc.spawn(|_| {
                 b2 = Some(time_resident(timings, "msm_b2", || {
+                    #[cfg(feature = "msm-g2-shifted-bench")]
+                    if let Some(msm) = cached_gls_g2 {
+                        assert!(
+                            shifted_g2.is_none(),
+                            "conflicting resident B2 benchmark modes"
+                        );
+                        let bases = &key.b_g2_query;
+                        assert!(
+                            chunk >= bases.len(),
+                            "cached GLS requires an unchunked B2 query"
+                        );
+                        return msm(bases, &z_sc(0, bases.len()));
+                    }
                     #[cfg(feature = "msm-g2-shifted-bench")]
                     if let Some(table) = shifted_g2 {
                         assert!(table.matches(&key.b_g2_query), "shifted B2 key mismatch");

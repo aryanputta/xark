@@ -243,6 +243,41 @@ impl CachedImages {
     }
 }
 
+/// The complete-proof comparison keeps validated public inputs resident.
+#[cfg(feature = "msm-g2-shifted-bench")]
+pub(crate) struct ResidentCachedGls<'a> {
+    bases: &'a [G2Affine],
+    cache: CachedImages,
+    recoder: Recoder,
+}
+
+#[cfg(feature = "msm-g2-shifted-bench")]
+impl<'a> ResidentCachedGls<'a> {
+    pub(crate) fn new(bases: &'a [G2Affine]) -> Result<Self, String> {
+        check_subgroup(bases)
+            .map_err(|index| format!("B2 base {index} is outside the BN254 G2 subgroup"))?;
+        let cache = CachedImages::new(bases).map_err(str::to_owned)?;
+        Ok(Self {
+            bases,
+            cache,
+            recoder: Recoder::new(),
+        })
+    }
+
+    pub(crate) fn payload_bytes(&self) -> usize {
+        self.cache.points.len() * size_of::<G2Affine>()
+    }
+
+    pub(crate) fn msm(&self, bases: &[G2Affine], scalars: &[Scalar]) -> G2Projective {
+        assert!(
+            std::ptr::eq(self.bases, bases),
+            "cached GLS B2 key mismatch"
+        );
+        let recoded = self.cache.recode::<true>(&self.recoder, scalars);
+        msm::msm::<G2Projective>(&self.cache.points, &recoded)
+    }
+}
+
 struct CandidateTiming {
     total: Duration,
     recode: Duration,
@@ -451,6 +486,23 @@ mod tests {
         let encoded = cache.recode::<true>(&Recoder::new(), &scalars);
         let expected = G2Projective::msm_bigint(&bases, &scalars);
         assert_eq!(msm::msm::<G2Projective>(&cache.points, &encoded), expected);
+        #[cfg(feature = "msm-g2-shifted-bench")]
+        assert_eq!(
+            ResidentCachedGls::new(&bases)
+                .unwrap()
+                .msm(&bases, &scalars),
+            expected
+        );
+    }
+
+    #[cfg(feature = "msm-g2-shifted-bench")]
+    #[test]
+    #[should_panic(expected = "cached GLS B2 key mismatch")]
+    fn resident_gls_rejects_another_key_buffer() {
+        let bases = vec![G2Affine::generator()];
+        let other = bases.clone();
+        let table = ResidentCachedGls::new(&bases).unwrap();
+        table.msm(&other, &[Scalar::default()]);
     }
 
     #[test]
@@ -470,5 +522,7 @@ mod tests {
             .find(|p| !p.is_in_correct_subgroup_assuming_on_curve())
             .unwrap();
         assert_eq!(check_subgroup(&[G2Affine::generator(), point]), Err(1));
+        #[cfg(feature = "msm-g2-shifted-bench")]
+        assert!(ResidentCachedGls::new(&[G2Affine::generator(), point]).is_err());
     }
 }
