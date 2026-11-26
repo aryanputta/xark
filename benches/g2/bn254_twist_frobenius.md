@@ -46,3 +46,9 @@ The rows below count only affine coordinates at 128 bytes per G2 point. The four
 | Escrow | 7,606 | 973,568 B | 3,894,272 B | 2,920,704 B | 1,508,352 → 3,016,704 B |
 
 Retaining the existing 32-byte scalar and 4-byte index entries would add another 308,304 B for withdrawal and 424,224 B for escrow to the transient expansion. The coordinates, scalars and index figures exclude bucket scratch, allocation overhead and process RSS. An eager four-image cache is optional. `ψ²` and `ψ³` admit the sparse construction above. The eligible counts are half the 8,564 and 11,784 expanded entries in the verified `glv_split=true` occupancy rows at `0de2303`.
+
+## Exact rounding without division for each scalar
+
+Let `c` be a nonnegative cofactor magnitude and `K = floor(2^512 c/r)`. For a canonical scalar `s < r`, the error in replacing `sc/r` with `sK/2^512` is at most `s/2^512 < 1/(2r)` because `2r(r−1) < 2^512` for this modulus. Since `r` is odd, `sc/r` is at least `1/(2r)` from any half-integer. Both values round to exactly the same integer. The recoder can therefore compute `(sK + 2^511) >> 512` and then apply the constant cofactor sign.
+
+This removes the division from each of the four runtime lattice coordinates. It uses a wider integer product. It needs separate timing and a limb-level implementation before any performance claim. The reference compares exact division and multiplication at the closest representable fractions on either side of every coefficient's half-integer boundary, plus 4,096 seeded canonical scalars.

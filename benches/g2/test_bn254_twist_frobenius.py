@@ -12,6 +12,8 @@ from bn254_twist_frobenius import (
     GLS_BOUNDS,
     GLS_COFACTORS,
     GLS_POWERS,
+    GLS_RECIPROCAL_BITS,
+    GLS_RECIPROCALS,
     LAMBDA,
     P,
     PSI_X,
@@ -22,6 +24,7 @@ from bn254_twist_frobenius import (
     U,
     decompose,
     decompose_gls,
+    decompose_gls_reciprocal,
     fq2_conj,
     fq2_mul,
     fq2_neg,
@@ -77,7 +80,7 @@ class BN254TwistFrobeniusTests(unittest.TestCase):
         scalar = 4407920970296243842393367215006156084916469457145843978461
         self.assertEqual(fq2_mul(fq2_conj(PSI_X), PSI_X), omega)
         self.assertEqual(fq2_mul(fq2_conj(PSI_Y), PSI_Y), (P - 1, 0))
-        self.assertEqual(-LAMBDA**2 % R, scalar)
+        self.assertEqual(-(LAMBDA**2) % R, scalar)
         self.assertIsNotNone(GENERATOR)
         x, y = GENERATOR
         self.assertEqual(psi(psi(GENERATOR)), (fq2_mul(omega, x), fq2_neg(y)))
@@ -135,14 +138,42 @@ class BN254TwistFrobeniusTests(unittest.TestCase):
             tuple(sum(x * p for x, p in zip(row, GLS_POWERS)) for row in GLS_BASIS),
             (0, -2 * R, R, 2 * R),
         )
-        self.assertEqual(tuple(bound.bit_length() for bound in GLS_BOUNDS), (64, 63, 64, 64))
+        self.assertEqual(
+            tuple(bound.bit_length() for bound in GLS_BOUNDS), (64, 63, 64, 64)
+        )
         rng = random.Random(25404)
         edges = (0, 1, -1, R // 2, R - 1, R, R + 1, -R - 1, 2**256 - 1)
         for scalar in (*edges, *(rng.randrange(R) for _ in range(4096))):
             parts = decompose_gls(scalar)
             for part, bound in zip(parts, GLS_BOUNDS):
                 self.assertLessEqual(abs(part), bound)
-            self.assertEqual(sum(k * e for k, e in zip(parts, GLS_POWERS)) % R, scalar % R)
+            self.assertEqual(
+                sum(k * e for k, e in zip(parts, GLS_POWERS)) % R, scalar % R
+            )
+
+    def test_reciprocal_split_matches_exact_division_at_rounding_boundaries(self):
+        self.assertLess(2 * R * (R - 1), 1 << GLS_RECIPROCAL_BITS)
+        for c, multiplier in zip(GLS_COFACTORS, GLS_RECIPROCALS, strict=True):
+            numerator = abs(c) << GLS_RECIPROCAL_BITS
+            self.assertLessEqual(multiplier * R, numerator)
+            self.assertLess(numerator, (multiplier + 1) * R)
+        around_halves = [
+            (residue * pow(abs(c), -1, R)) % R
+            for c in GLS_COFACTORS
+            for residue in (R // 2 - 1, R // 2, R // 2 + 1, R // 2 + 2)
+        ]
+        rng = random.Random(512)
+        for scalar in (
+            0,
+            1,
+            -1,
+            R - 1,
+            R,
+            R + 1,
+            *around_halves,
+            *(rng.randrange(R) for _ in range(4096)),
+        ):
+            self.assertEqual(decompose_gls_reciprocal(scalar), decompose_gls(scalar))
 
     def test_gls_images_and_recombination_against_group_oracle(self):
         for multiple in (0, 1, -1, 7, 43):
@@ -171,7 +202,9 @@ class BN254TwistFrobeniusTests(unittest.TestCase):
                 -1489860392368150451,
             ),
         )
-        self.assertEqual(Counter(SHIFT_128_MASKS), {0: 17, 1: 20, 12: 1, 14: 13, 15: 12})
+        self.assertEqual(
+            Counter(SHIFT_128_MASKS), {0: 17, 1: 20, 12: 1, 14: 13, 15: 12}
+        )
         self.assertEqual(len(SHIFT_128_MASKS) - 1, 62)
         for multiple in (0, 1, -1, 7, 43):
             point = scalar_mul(multiple, GENERATOR)

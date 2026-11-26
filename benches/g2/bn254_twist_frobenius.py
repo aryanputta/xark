@@ -199,7 +199,9 @@ GLS_COFACTORS = tuple(
     (-1) ** i * det3(*(row[1:] for j, row in enumerate(GLS_BASIS) if j != i))
     for i in range(4)
 )
-GLS_BOUNDS = tuple(sum(abs(component) for component in col) // 2 for col in zip(*GLS_BASIS))
+GLS_BOUNDS = tuple(
+    sum(abs(component) for component in col) // 2 for col in zip(*GLS_BASIS)
+)
 
 
 def decompose_gls(scalar: int) -> tuple[int, ...]:
@@ -207,6 +209,28 @@ def decompose_gls(scalar: int) -> tuple[int, ...]:
     scalar %= R
     # First column cofactors give the exact row-basis coordinates of (s,0,0,0).
     rounded = [nearest(scalar * cofactor, R) for cofactor in GLS_COFACTORS]
+    return tuple(
+        (scalar if j == 0 else 0) - sum(m * b for m, b in zip(rounded, col))
+        for j, col in enumerate(zip(*GLS_BASIS))
+    )
+
+
+# With canonical s, a 512-bit truncation cannot cross a rounding boundary.
+GLS_RECIPROCAL_BITS = 512
+GLS_RECIPROCALS = tuple(
+    (abs(cofactor) << GLS_RECIPROCAL_BITS) // R for cofactor in GLS_COFACTORS
+)
+
+
+def decompose_gls_reciprocal(scalar: int) -> tuple[int, ...]:
+    """Use precomputed cofactors divided by r, with exact final rounding."""
+    scalar %= R
+    half = 1 << (GLS_RECIPROCAL_BITS - 1)
+    rounded = [
+        ((scalar * multiplier + half) >> GLS_RECIPROCAL_BITS)
+        * (-1 if cofactor < 0 else 1)
+        for cofactor, multiplier in zip(GLS_COFACTORS, GLS_RECIPROCALS, strict=True)
+    ]
     return tuple(
         (scalar if j == 0 else 0) - sum(m * b for m, b in zip(rounded, col))
         for j, col in enumerate(zip(*GLS_BASIS))
