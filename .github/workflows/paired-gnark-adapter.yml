@@ -17,6 +17,10 @@ jobs:
         with:
           ref: d807df8a6c9f2b1de15cc4aaf39f844cd8ba2e17
           path: adapter-source
+      - uses: actions/checkout@v5
+        with:
+          ref: e838a62dd6206312c67c862fbe24cf96e7955bd3
+          path: baseline-source
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.4'
@@ -37,6 +41,19 @@ jobs:
           go version -m gnark-linux-amd64 gnark-darwin-amd64 > build-info.txt
           sha256sum gnark-linux-amd64 gnark-darwin-amd64 > SHA256SUMS
       - uses: dtolnay/rust-toolchain@stable
+      - name: Build the checked upstream 0.5 baseline
+        working-directory: baseline-source
+        run: |
+          upstream=03a7f519d28df6718f7ce6dda41f1e57e5ea55db
+          git fetch --no-tags --depth=1 origin "$upstream"
+          test "$(git diff --name-only "$upstream" HEAD)" = crates/groth16/examples/bench_verified_warm.rs
+          cargo build --locked --profile ci -p xark-groth16 --example bench_verified_warm
+          out="$GITHUB_WORKSPACE/artifact"
+          cp target/ci/examples/bench_verified_warm "$out/xark-v05-verified-linux-amd64"
+          git rev-parse HEAD > "$out/baseline-source-commit.txt"
+          rustc -vV > "$out/rustc.txt"
+          cd "$out"
+          sha256sum xark-v05-verified-linux-amd64 >> SHA256SUMS
       - name: Check the independent verifier with real Gnark proofs
         run: |
           cargo test --locked --profile ci -p xark-groth16 --example verify_gnark_receipt
@@ -53,6 +70,8 @@ jobs:
             echo 'unexpectedly accepted the altered statement' >&2
             exit 1
           fi
+          cp target/ci/examples/verify_gnark_receipt artifact/verify-gnark-linux-amd64
+          (cd artifact && sha256sum verify-gnark-linux-amd64 >> SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
           name: pinned-gnark-adapters
