@@ -6,11 +6,24 @@ import tarfile
 import tempfile
 import unittest
 
+from affinity import choose_pair
 from reconstruct import members, parse
 from tune import ratios, stable
 
 
 class G2EvidenceTests(unittest.TestCase):
+    def test_affinity_respects_allowed_cpus_and_core_identity(self):
+        topology = "0,0,0\n1,0,0\n2,1,0\n3,1,0\n4,0,1\n"
+        self.assertEqual(choose_pair(topology, [1, 2, 3, 4], "smt")["cpus"], [2, 3])
+        self.assertEqual(
+            choose_pair(topology, [1, 2, 3, 4], "physical")["cpus"], [1, 2]
+        )
+        with self.assertRaises(ValueError):
+            choose_pair(topology, [0, 4], "physical")
+        self.assertEqual(
+            choose_pair(topology, [0, 4], "auto")["placement"], "unclassified"
+        )
+
     def test_query_receipt_is_required(self):
         sample = "query msm gnark: query=b2 sample=1 gnark_ns=84701234"
         with self.assertRaisesRegex(ValueError, "missing query parity"):

@@ -6,6 +6,8 @@ umask 077
 archive=${1:?provide the uploaded aaa-xark-offline-fixtures.tar.gz}
 out=${2:?provide a new output directory}
 samples=${3:-30}
+policy=${4:-auto}
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 candidate=1dc7867c873f8d9f5b8cef5e6cbca61a25ae7c07
 runner=225735659def0780b268e481794a24d1e3196eea
 examples=9e5d69ade7e0c107a2929306d3b758a8969e1089
@@ -18,6 +20,7 @@ archive=$(cd "$(dirname "$archive")" && pwd)/$(basename "$archive")
 
 mkdir "$out"
 out=$(cd "$out" && pwd)
+python3 "$script_dir/affinity.py" "$policy" > "$out/affinity.json"
 workspace=${XARK_COLAB_WORKSPACE:-/content}
 cd "$workspace"
 
@@ -89,18 +92,6 @@ with tarfile.open(archive, "r:gz") as data:
 if seen != expected.keys():
     raise ValueError("fixture archive is incomplete")
 
-allowed = sorted(os.sched_getaffinity(0))
-assert len(allowed) >= 2, "paired comparison requires two visible logical CPUs"
-cores = {}
-for line in subprocess.check_output(["lscpu", "-p=CPU,CORE,SOCKET"], text=True).splitlines():
-    if line.startswith("#"):
-        continue
-    cpu, core, socket = line.split(",")
-    if int(cpu) in allowed:
-        cores.setdefault((core, socket), []).append(int(cpu))
-cpus = next((pair[:2] for pair in cores.values() if len(pair) >= 2), allowed[:2])
-(output / "affinity.txt").write_text(",".join(map(str, cpus)) + "\n")
-
 xark = {"path": str(root / "xark-g2"), "commit": commit}
 binary = str(root / "xark-g2/target/release/examples/bench_prove")
 config = {
@@ -123,7 +114,13 @@ config = {
 PY
 
 benchmark=xark-bench-runner/benches/competitive/run.py
-affinity=$(cat "$out/affinity.txt")
+affinity=$(python3 - "$out/affinity.json" <<'PYCPUS'
+import json
+import sys
+with open(sys.argv[1]) as stream:
+    print(",".join(map(str, json.load(stream)["cpus"])))
+PYCPUS
+)
 taskset -c "$affinity" python3 "$benchmark" --config "$out/config.json" \
     --output "$out/b2" --competitor xark --xark-query b2 --threads 2 \
     --samples "$samples" --pairs 2 --strict-contention
