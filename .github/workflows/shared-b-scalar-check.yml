@@ -2,7 +2,7 @@ name: Shared B scalar Linux correctness
 
 on:
   push:
-    branches: [perf/request-local-b-scalars]
+    branches: [perf/request-local-b-scalars, integration/shared-b-scratch-wipe]
 
 permissions:
   contents: read
@@ -20,10 +20,12 @@ jobs:
         with:
           components: clippy, rustfmt
       - run: cargo fmt --all -- --check
-      - name: Test full proofs on source-generated inputs and check the benchmark
+      - name: Test Groth16 with shared B scalars and scratch wiping
         run: |
           features=msm-b-shared-bench,msm-g2-shifted-bench,msm-g2-endpoint-bench
-          cargo test --locked --profile ci -p xark-groth16 --features "$features" --test prover
-          cargo clippy --locked -p xark-groth16 --features "$features" --test prover --example bench_prove -- -D warnings
-      - name: Check normal feature configuration
-        run: cargo check --locked -p xark-groth16 --example bench_prove
+          cargo test --locked --profile ci -p xark-groth16 --features "$features"
+          cargo clippy --locked --profile ci -p xark-groth16 --features "$features" --all-targets -- -D warnings
+      - name: Test portable Groth16 without experimental features
+        run: |
+          cargo test --locked --profile ci -p xark-groth16
+          cargo clippy --locked --profile ci -p xark-groth16 --all-targets -- -D warnings
