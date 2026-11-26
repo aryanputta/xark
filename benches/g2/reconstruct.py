@@ -37,6 +37,10 @@ ARCHIVES = {
         "aaa-xark-g2-window",
         "6940a89b631c7302b9ac9b43156c718f7739c2ad340e71ad8e483061f4e44b9d",
     ),
+    "ark-ff-asm": (
+        "xark-ark-ff-asm",
+        "40e6032b225d346ac441d0adb3323e08f4e3a1b9f4044163b022a16eee0b2e97",
+    ),
     "constantine": (
         "aaa-xark-constantine-fixed",
         "0dd952f206109a34c62b19519b1db20865458b40dc08a47dc4c7931010f9e670",
@@ -82,6 +86,7 @@ ASSESSMENT = {
     "fq2-proof": "verified; Karatsuba slows all four full-proof medians",
     "fq2-query": "verified result parity; timing outcome varies with order",
     "window": "verified result parity; width changes miss repeatability gate",
+    "ark-ff-asm": "verified checked-proof parity; 240 timed proofs; no stable gain",
     "constantine": "verified B1 only; no G2 result",
     "linux-perf": "verified saved raw inputs; initial wrapper marker check failed",
     "task-profile": "verified instrumented runs; task durations may overlap",

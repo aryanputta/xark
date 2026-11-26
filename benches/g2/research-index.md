@@ -6,7 +6,7 @@ The branch starts from Blueshift `xark-0.5` at `03a7f519d28df6718f7ce6dda41f1e57
 
 **PR #101 scope.** Its standalone diff changes `ConstraintSource::first_unsatisfied`. In the ordinary prover, callers enter that method via `self_check_failure` after verification fails. The default configuration sets `self_check=false`. In the CLI, `--verify` sets it, but successful proofs still skip the failure diagnostic. The reported checked-resident gain came from `BENCH_CHECK_ROWS`, which explicitly calls `first_unsatisfied` on each timed proof. Treat the result as faster explicit checking or failure diagnosis. The captured data does not establish lower latency for successful default production proofs. [Exact #101 diff](https://github.com/blueshift-gg/xark/pull/101/files)
 
-`catalog.py` indexed 55 discovered Xark files, 54 unique outer hashes, and 794 distinct archived text members. The two `xark-gnark-evidence` archives are byte-identical. The dependency cache is fingerprinted without member traversal. The earlier numerical reconstruction covers 11 specifically pinned archives and 4,255 parsed records. A catalogued file is not a verified performance experiment.
+`catalog.py` indexed 55 discovered Xark files, 54 unique outer hashes, and 794 distinct archived text members. The two `xark-gnark-evidence` archives are byte-identical. The dependency cache is fingerprinted without member traversal. The earlier numerical reconstruction covers 12 specifically pinned archives and 4,495 parsed records. A catalogued file is not a verified performance experiment.
 
 The original Linux B2 arms report 5,406 withdrawal and 7,606 escrow terms. The two withdrawal Xark medians are 99.280 and 100.446 ms. The matching Gnark Crypto medians are 86.076 and 86.215 ms. Their arithmetic means reproduce the approximate 99.865 and 86.15 ms reported earlier, and should not be called pooled medians. The portable one-worker task profile recorded 135.135 ms median B2 task time. In the separate query CPU profile, `sum_of_products` leaf symbols account for 39.49% of all query-process samples, including the 21.78% seen with G2 affine flush ancestry. In the checked-proof profile the corresponding nested G2 flush value is 10.82%. Those values use different denominators and overlap where nested.
 
@@ -32,7 +32,7 @@ The shell could not resolve the public download hosts. The items below were insp
 
 | Work | Verified source and immediate research use |
 | --- | --- |
-| El Housni and Botrel, *EdMSM* | [ePrint 2022/1400](https://eprint.iacr.org/2022/1400). Improved CIOS is relevant independently of Edwards coordinates. Edwards-form and benchmark claims need their stated curves checked before any BN254 G2 transfer. |
+| El Housni and Botrel, *EdMSM* | [ePrint 2022/1400](https://eprint.iacr.org/2022/1400). The [published paper](https://d-nb.info/1307299784/34) gives the modulus bound, canonical-input requirement and two carry passes in Algorithm 2. See the overlap below. |
 | Luo, Fu and Gong, fixed-point MSM | [TCHES 2023](https://doi.org/10.46586/tches.v2023.i2.358-380). Bucket-set construction for repeated points. Read alongside the subsequent correction to the original residue coverage. |
 | Fan, Kuchta, Sica and Xu, pairing-based MSM | [ePrint 2024/750](https://eprint.iacr.org/2024/750). Generalizes the LFG bucket construction and supplies counterexamples to original coverage. Applies to a fixed-table hypothesis subject to group and representation checks. |
 | Le and Sica, optimal bucket sets with endomorphisms | [ePrint 2026/1902](https://eprint.iacr.org/2026/1902) · [paper copy](https://opencryptology.org/2026/1902.pdf). Hexagonal model gives `(7^c+5)/6` buckets for the reviewed construction. The published timings use BLS12-381. The BN254 G2 lift and residency need independent validation. |
@@ -48,6 +48,12 @@ The shell could not resolve the public download hosts. The items below were insp
 | ZPrize implementation notes | [ZPrize 2022 implementation notes](https://github.com/mitschabaude/montgomery/blob/main/doc/zprize22.md). Evaluate implementation assumptions before adapting an accelerator or representation strategy. |
 
 The citation chain from the Luo, Fu and Gong paper to Fan et al. and Le and Sica changes the immediate fixed-point experiment. Use the corrected residue coverage, and account for immutable table preparation and memory in addition to per-request latency. [Full-text fixed-point digest](https://github.com/aryanputta/xark/blob/research/fixed-point-msm-literature-v05/docs/research/fixed-point-msm-literature.md)
+
+## No-carry CIOS overlap
+
+Botrel and El Housni's Algorithm 2 for a single Montgomery product applies when the highest word of the modulus is at most `0x7ffffffffffffffe` and inputs are canonical. The BN254 Fq high word is `0x30644e72e131a029`. The paper saves `5N+2` additions over its conventional CIOS baseline and measures a 5.9% gain at four words. Arkworks 0.6 already uses the no-carry approach for ordinary Fq multiplication in a portable kernel, with an optional ADX/BMI2 macro path. Its generic fused `sum_of_products` is a separate method. The single-product carry bound does not authorize replacing a two-product row's high-word handling. [Algorithm 2 and its proof](https://d-nb.info/1307299784/34) · [Pinned Arkworks backend](https://github.com/arkworks-rs/algebra/blob/v0.6.0/ff/src/fields/models/fp/montgomery_backend.rs)
+
+The archived Arkworks `asm` toggle test preserved six fixed-randomness proofs exactly and checked 240 proofs across eight timed arms. Enabling the feature changed escrow arm p50 by +0.32% and +1.28%, and withdrawal by −0.08% and +1.75% in the paired orders. Both binary instruction excerpts contain MULX. The excerpts alone cannot identify which routines executed for B2. This earlier test supports screening new fused arithmetic separately from the existing feature toggle.
 
 ## Digit clustering and bucket conflicts
 
