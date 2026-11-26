@@ -66,6 +66,26 @@ GNARK = re.compile(r"^gnark_prove_ns=(\d+)$")
 RSS = re.compile(r"^sampled_high_water_rss_kib=(\d+)$")
 MAX_PARSE_BYTES = 4 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
+PROVENANCE = {
+    "host.log",
+    "binary.sha256",
+    "commands.log",
+    "status.log",
+    "initial-processes.log",
+}
+ASSESSMENT = {
+    "gnark-query": "verified; withdrawal B2 repeats, escrow B2 reverses with order",
+    "gnark-proof": "verified paired checked resident proof baseline",
+    "fq2-proof": "verified; Karatsuba slows all four full-proof medians",
+    "fq2-query": "verified result parity; timing outcome varies with order",
+    "window": "verified result parity; width changes miss repeatability gate",
+    "constantine": "verified B1 only; no G2 result",
+    "linux-perf": "verified saved raw inputs; initial wrapper marker check failed",
+    "task-profile": "verified instrumented runs; task durations may overlap",
+    "affine": "verified; disabling batch affine regresses full-proof median",
+    "merge": "verified; order-sensitive escrow and higher RSS",
+    "fixtures": "verified input fingerprints; no timing",
+}
 
 
 def sha256(path):
@@ -90,7 +110,9 @@ def members(path):
                 raise ValueError(f"duplicate or excess archive member {member.name!r}")
             seen.add(name)
             with archive.extractfile(member) as file:
-                if member.size <= MAX_PARSE_BYTES and name.suffix in {".log", ".rss"}:
+                if member.size <= MAX_PARSE_BYTES and (
+                    name.suffix in {".log", ".rss"} or name.name in PROVENANCE
+                ):
                     data = file.read()
                     yield str(name), hashlib.sha256(data).hexdigest(), data
                 else:
@@ -169,11 +191,24 @@ def reconstruct(downloads, output):
         if sha256(path) != expected:
             raise ValueError(f"archive digest differs for {path.name}")
         receipts = {}
+        provenance = {}
         for name, fingerprint, data in members(path):
             receipts[name] = fingerprint
             if run != "fixtures" and data is not None:
-                rows.extend(parse(run, name, data.decode("utf-8", errors="replace")))
-        inputs.append(dict(run=run, file=path.name, sha256=expected, members=receipts))
+                receipt = data.decode("utf-8", errors="replace")
+                rows.extend(parse(run, name, receipt))
+                if name in PROVENANCE and len(data) <= 16 * 1024:
+                    provenance[name] = receipt.splitlines()
+        inputs.append(
+            dict(
+                run=run,
+                file=path.name,
+                sha256=expected,
+                members=receipts,
+                assessment=ASSESSMENT[run],
+                provenance=provenance,
+            )
+        )
 
     cohorts = defaultdict(list)
     for row in rows:
@@ -209,7 +244,7 @@ def reconstruct(downloads, output):
 
     output.mkdir(mode=0o700)
     with (output / "samples.csv").open("w", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(file, fieldnames=list(rows[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
     (output / "reconstructed.json").write_text(
