@@ -8,7 +8,7 @@ use std::time::Instant;
 use ark_bn254::{Fq, Fq2, Fr, G2Affine, G2Projective};
 use ark_ec::VariableBaseMSM;
 use ark_ff::{BigInteger, PrimeField};
-use xark_groth16::msm::{PreparedG2, Scalar, msm};
+use xark_groth16::msm::{PreparedG2, Scalar, msm, msm_g2_base_field_endo};
 
 const HEADER: usize = 12;
 const RECORD: usize = 224;
@@ -35,8 +35,14 @@ fn g2(bytes: &[u8]) -> io::Result<G2Affine> {
 
 fn main() -> io::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    let [path, samples, warmups] = args.as_slice() else {
-        panic!("usage: bench_b2_prepared <test-query-file> <samples> <warmups>");
+    let (path, samples, warmups, specialized) = match args.as_slice() {
+        [path, samples, warmups] => (path, samples, warmups, false),
+        [path, samples, warmups, mode] if mode == "--base-field-endo" => {
+            (path, samples, warmups, true)
+        }
+        _ => panic!(
+            "usage: bench_b2_prepared <test-query-file> <samples> <warmups> [--base-field-endo]"
+        ),
     };
     let samples: usize = samples.parse().expect("sample count");
     let warmups: usize = warmups.parse().expect("warmup count");
@@ -58,13 +64,20 @@ fn main() -> io::Result<()> {
     assert_eq!(G2Projective::msm_bigint(&bases, &scalars), reference);
     drop(bytes);
 
-    let start = Instant::now();
-    let prepared = PreparedG2::new(&bases).expect("B2 payload budget");
-    let preparation_ns = start.elapsed().as_nanos();
-    let measure = |use_cache| {
+    let (prepared, preparation_ns) = if specialized {
+        (None, 0)
+    } else {
         let start = Instant::now();
-        let result = if use_cache {
-            prepared.msm(black_box(&scalars))
+        let prepared = PreparedG2::new(&bases).expect("B2 payload budget");
+        (Some(prepared), start.elapsed().as_nanos())
+    };
+    let measure = |candidate| {
+        let start = Instant::now();
+        let result = if candidate {
+            match &prepared {
+                Some(prepared) => prepared.msm(black_box(&scalars)),
+                None => msm_g2_base_field_endo(black_box(&bases), black_box(&scalars)),
+            }
         } else {
             msm::<G2Projective>(black_box(&bases), black_box(&scalars))
         };
@@ -89,9 +102,13 @@ fn main() -> io::Result<()> {
     println!(
         "terms={terms} workers={} prepared_payload_bytes={} preparation_ns={preparation_ns}",
         rayon::current_num_threads(),
-        prepared.payload_bytes()
+        prepared.as_ref().map_or(0, PreparedG2::payload_bytes)
     );
-    println!("round,cache_first,baseline_ns,cached_ns");
+    if specialized {
+        println!("round,candidate_first,baseline_ns,base_field_endo_ns");
+    } else {
+        println!("round,cache_first,baseline_ns,cached_ns");
+    }
     for (i, (cache_first, baseline, cached)) in timings.into_iter().enumerate() {
         println!("{},{cache_first},{baseline},{cached}", i + 1);
     }

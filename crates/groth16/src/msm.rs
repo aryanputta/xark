@@ -700,6 +700,33 @@ pub struct PreparedG2<'a> {
     endomorphism_x: Box<[ark_bn254::Fq2]>,
 }
 
+/// Experimental G2 MSM using two base-field products for the GLV point map.
+#[cfg(feature = "g2-endo-bench")]
+pub fn msm_g2_base_field_endo(
+    bases: &[ark_bn254::G2Affine],
+    scalars: &[Scalar],
+) -> ark_bn254::G2Projective {
+    msm_with_endomorphism::<ark_bn254::G2Projective>(bases, scalars, &|_, base| {
+        g2_base_field_endo(base)
+    })
+}
+
+#[cfg(feature = "g2-endo-bench")]
+#[inline(always)]
+fn g2_base_field_endo(base: &ark_bn254::G2Affine) -> ark_bn254::G2Affine {
+    use ark_ec::scalar_mul::glv::GLVConfig;
+
+    const COEFFICIENT: ark_bn254::Fq2 = ark_bn254::g2::Config::ENDO_COEFFS[0];
+    const {
+        let [a, b, c, d] = COEFFICIENT.c1.0.0;
+        assert!(a | b | c | d == 0);
+    }
+    let mut transformed = *base;
+    transformed.x.c0 *= COEFFICIENT.c0;
+    transformed.x.c1 *= COEFFICIENT.c0;
+    transformed
+}
+
 #[cfg(feature = "g2-endo-bench")]
 impl<'a> PreparedG2<'a> {
     const MAX_PAYLOAD_BYTES: usize = 512 * 1024;
@@ -754,6 +781,9 @@ mod tests {
             generator.mul_bigint([11]).into_affine(),
         ];
         let prepared = PreparedG2::new(&bases).unwrap();
+        for base in &bases {
+            assert_eq!(g2_base_field_endo(base), G2Projective::endo(base));
+        }
         let wide = Fr::from(2u64).pow([200]);
         for values in [
             [wide, Fr::from(3u64), wide, -Fr::one(), Fr::zero()],
@@ -762,6 +792,7 @@ mod tests {
             let scalars = values.map(|value| value.into_bigint());
             let oracle = G2Projective::msm_bigint(&bases, &scalars);
             assert_eq!(prepared.msm(&scalars), oracle);
+            assert_eq!(msm_g2_base_field_endo(&bases, &scalars), oracle);
             assert_eq!(msm::<G2Projective>(&bases, &scalars), oracle);
         }
         assert_eq!(prepared.payload_bytes(), 5 * size_of::<ark_bn254::Fq2>());
