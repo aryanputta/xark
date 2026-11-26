@@ -566,21 +566,33 @@ def run_suite(args):
             == files["node"],
             "the pinned node binary must be the node found on PATH",
         )
-    if args.strict_contention:
-        try:
-            processes(os.getpgrp(), args.contention_percent)
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise ValueError(
-                "host process monitoring unavailable; strict run did not start"
-            ) from exc
-    output = args.output.resolve()
-    output.mkdir(mode=0o700)
     hardware = host()
     affinity = hardware["affinity"]
     require(
         not affinity or len(affinity) >= args.threads,
         "thread budget exceeds CPU affinity",
     )
+    if "gnark" in lanes and not args.smoke:
+        require(
+            sys.platform == "linux"
+            and affinity
+            and len(affinity) == args.threads
+            and args.strict_contention,
+            "live candidate/Gnark pairing requires Linux, exact CPU affinity and strict contention sampling",
+        )
+    if args.strict_contention:
+        try:
+            competing = processes(os.getpgrp(), args.contention_percent)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError(
+                "host process monitoring unavailable; strict run did not start"
+            ) from exc
+        require(
+            not competing,
+            "host process preflight detected contention; strict run did not start",
+        )
+    output = args.output.resolve()
+    output.mkdir(mode=0o700)
     report = {
         "version": 1,
         "mode": "smoke" if args.smoke else "live",

@@ -38,6 +38,8 @@ To pair two Xark builds, include a `candidate` object with a `binary` path and a
 
 To compare the candidate directly with Gnark, set `candidate.lanes` to `["gnark"]` and supply a nonempty single-line `candidate.receipt`, such as `bench shared B scalars: 1`. Use `--competitor gnark`. The pinned baseline exporter still produces the relation and witness. Candidate flags apply only to the candidate's resident proof subprocess. Gnark uses the independently pinned adapter binary. The report records `xark_reference` and uses that arm as the denominator for `competitor_over_xark`. With `candidate.lanes` omitted, the candidate still applies only to Xark-versus-Xark comparisons.
 
+Live candidate/Gnark runs require Linux, `--strict-contention`, and affinity containing exactly `--threads` CPUs. Use `--smoke` for a local correctness replay. Keep the run directory private because the exported witness is retained alongside the public logs.
+
 ```sh
 python3 -m unittest discover -s benches/competitive -v
 ```
