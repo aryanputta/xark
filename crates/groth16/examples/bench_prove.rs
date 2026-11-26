@@ -6,6 +6,8 @@
 //! bench_prove ark    <circuit.xbc> <pk.bin> <inputs.json> [--reduced]
 //! bench_prove stream <circuit.xbc> <pk.bin> <inputs.json> [--source xbc|min] [--tile N] [--chunk N]
 //! ```
+//! `BENCH_MERGE_BELOW=N` selects the merged MSM threshold for `warm` and
+//! `proof-hex` runs, allowing identical fixture runs on either proving path.
 //! `--reduced` / `--source xbc` prove the template-reduced circuit (key from
 //! `setup-reduced`); otherwise the boundary-minimized circuit `xark setup` keys.
 
@@ -191,6 +193,14 @@ fn reduced(xbc: &[u8]) -> xark_ir::R1csProgram {
         .into_r1cs()
 }
 
+fn bench_prover_config() -> ProverConfig {
+    let mut cfg = ProverConfig::default();
+    if let Ok(value) = std::env::var("BENCH_MERGE_BELOW") {
+        cfg.merge_below = value.parse().expect("BENCH_MERGE_BELOW must be a usize");
+    }
+    cfg
+}
+
 fn main() {
     // Must be decided before any allocation is tracked (CUR would underflow if
     // tracking switched off/on mid-run).
@@ -333,7 +343,7 @@ fn main() {
             Box::new(Arkworks::new(&pk)),
             Box::new(Cpu::new(
                 xark_groth16::InMemoryPk::new(&pk),
-                ProverConfig::default(),
+                bench_prover_config(),
             )),
         ];
         // Each prover's proofs back to back, as a prove-many server makes them
@@ -428,7 +438,7 @@ fn main() {
             &z,
             &mut SerializedPk::open(&pk_path).unwrap(),
             &mut ChaCha20Rng::seed_from_u64(seed),
-            &ProverConfig::default(),
+            &bench_prover_config(),
         )
         .unwrap();
         fn hex(p: &impl CanonicalSerialize) -> String {

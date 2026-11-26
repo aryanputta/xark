@@ -328,6 +328,11 @@ fn proof_is_byte_identical_to_arkworks_and_verifies() {
         let cfgs = [
             ProverConfig::default(),
             ProverConfig {
+                self_check: true,
+                merge_below: usize::MAX,
+                ..ProverConfig::default()
+            },
+            ProverConfig {
                 merge_below: 0,
                 ..ProverConfig::default()
             },

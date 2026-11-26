@@ -293,13 +293,7 @@ fn prove_merged<S: ConstraintSource + ?Sized>(
     rayon::scope(|sc| {
         sc.spawn(|_| {
             let (b_msm, g_a) = rayon::join(
-                || {
-                    let mut pts = key.b_g2_query.clone();
-                    pts.push(key.vk.beta_g2);
-                    let mut k = zs.clone();
-                    k.push(one);
-                    msm::<G2Projective>(&pts, &k)
-                },
+                || msm::<G2Projective>(&key.b_g2_query, &zs) + key.vk.beta_g2,
                 || {
                     let mut pts = key.a_query.clone();
                     pts.extend([key.vk.alpha_g1, key.delta_g1]);
