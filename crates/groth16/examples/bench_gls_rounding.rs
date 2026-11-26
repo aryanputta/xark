@@ -4,7 +4,7 @@ use std::hint::black_box;
 use std::path::Path;
 use std::time::Instant;
 
-use num_bigint::BigUint;
+use num_bigint::{BigInt, BigUint};
 
 const MODULUS: &str =
     "21888242871839275222246405745257275088548364400416034343698204186575808495617";
@@ -53,6 +53,14 @@ const RECIPROCALS: [[u64; 7]; 4] = [
     ],
 ];
 
+const U: i128 = 4_965_661_367_192_848_881;
+const BASIS: [[i128; 4]; 4] = [
+    [2 * U, U + 1, -U, U],
+    [2 * U + 1, 0, 2 * U, 1],
+    [U + 1, U, U, -2 * U],
+    [2 * U + 1, -U, -U - 1, -U],
+];
+
 #[derive(Clone)]
 struct Scalar {
     value: BigUint,
@@ -92,11 +100,30 @@ impl ExactDivision {
         }
     }
 
+    fn coordinates(&self, scalar: &Scalar) -> [BigUint; 4] {
+        self.cofactors
+            .each_ref()
+            .map(|c| (&scalar.value * c + &self.half) / &self.modulus)
+    }
+
     fn round(&self, scalar: &Scalar) -> [[u64; 3]; 4] {
-        self.cofactors.each_ref().map(|c| {
-            let quotient = (&scalar.value * c + &self.half) / &self.modulus;
-            words(&quotient)
-        })
+        self.coordinates(scalar).each_ref().map(words)
+    }
+
+    fn decompose(&self, scalar: &Scalar) -> [i128; 4] {
+        let mut residual = [
+            BigInt::from(scalar.value.clone()),
+            BigInt::ZERO,
+            BigInt::ZERO,
+            BigInt::ZERO,
+        ];
+        for (row, coefficient) in BASIS.into_iter().zip(self.coordinates(scalar)) {
+            let coefficient = BigInt::from(coefficient);
+            for (out, entry) in residual.iter_mut().zip(row) {
+                *out -= &coefficient * entry;
+            }
+        }
+        residual.map(|part| i128::try_from(part).expect("bounded GLS component"))
     }
 }
 
@@ -122,6 +149,22 @@ fn reciprocal(scalar: &Scalar) -> [[u64; 3]; 4] {
     RECIPROCALS.map(|factor| round_reciprocal(scalar.words, factor))
 }
 
+// Every true signed residual is below 2^64 in magnitude. Calculating it modulo
+// 2^128 and reinterpreting it as signed therefore reconstructs it uniquely.
+fn decompose_fixed(scalar: &Scalar) -> [i128; 4] {
+    fn low128(lo: u64, hi: u64) -> u128 {
+        u128::from(lo) | (u128::from(hi) << 64)
+    }
+    let mut residual = [low128(scalar.words[0], scalar.words[1]), 0, 0, 0];
+    for (row, [lo, hi, _]) in BASIS.into_iter().zip(reciprocal(scalar)) {
+        let coefficient = low128(lo, hi);
+        for (out, entry) in residual.iter_mut().zip(row) {
+            *out = out.wrapping_sub(coefficient.wrapping_mul(entry as u128));
+        }
+    }
+    residual.map(|part| part as i128)
+}
+
 fn load(path: &Path, exact: &ExactDivision) -> Vec<Scalar> {
     let input = std::fs::read(path).expect("read test query export");
     assert_eq!(&input[..8], b"XKQMSM01");
@@ -141,11 +184,26 @@ fn load(path: &Path, exact: &ExactDivision) -> Vec<Scalar> {
         .collect()
 }
 
+fn time<T>(scalars: &[Scalar], round: impl Fn(&Scalar) -> T) -> u128 {
+    let start = Instant::now();
+    for _ in 0..10 {
+        for scalar in scalars {
+            black_box(round(black_box(scalar)));
+        }
+    }
+    start.elapsed().as_nanos()
+}
+
 fn main() {
     let mut args = std::env::args_os().skip(1);
     let path = args
         .next()
         .expect("provide a pinned synthetic B2 query export");
+    let full = match args.next().as_deref() {
+        None => false,
+        Some(flag) if flag == "--full" => true,
+        Some(_) => panic!("expected --full"),
+    };
     assert!(args.next().is_none());
     let exact = ExactDivision::new();
     let scalars = load(Path::new(&path), &exact);
@@ -158,18 +216,25 @@ fn main() {
             exact.round(scalar) == reciprocal(scalar),
             "roundings differ"
         );
+        assert!(
+            exact.decompose(scalar) == decompose_fixed(scalar),
+            "decompositions differ"
+        );
     }
-    let measure = |round: &dyn Fn(&Scalar) -> [[u64; 3]; 4]| {
-        let start = Instant::now();
-        for _ in 0..10 {
-            for scalar in &scalars {
-                black_box(round(black_box(scalar)));
-            }
+    let division = || {
+        if full {
+            time(&scalars, |scalar| exact.decompose(scalar))
+        } else {
+            time(&scalars, |scalar| exact.round(scalar))
         }
-        start.elapsed().as_nanos()
     };
-    let division = || measure(&|s| exact.round(s));
-    let fixed = || measure(&reciprocal);
+    let fixed = || {
+        if full {
+            time(&scalars, decompose_fixed)
+        } else {
+            time(&scalars, reciprocal)
+        }
+    };
     black_box((division(), fixed()));
     eprintln!(
         "verified {} wide fixture scalars with exact division",
@@ -225,6 +290,7 @@ mod tests {
         })) {
             let scalar = Scalar::new(value);
             assert!(reciprocal(&scalar) == exact.round(&scalar));
+            assert!(decompose_fixed(&scalar) == exact.decompose(&scalar));
         }
     }
 }
