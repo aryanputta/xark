@@ -12,6 +12,7 @@
 //! BENCH_TIME=1 bench_prove query-msm <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-xark <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! bench_prove query-msm-export <circuit.xbc> <reduced pk.bin> <statement-dir> <new-output-file>
+//! BENCH_TIME=1 bench_prove query-msm-synthetic <terms> <seed> <new-output-file> [samples] [warmups]
 //! ```
 //! `--reduced` / `--source xbc` prove the template-reduced circuit (key from
 //! `setup-reduced`); otherwise the boundary-minimized circuit `xark setup` keys.
@@ -37,6 +38,11 @@
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
 //! Arkworks reference sums for a same-input benchmark. Use reproducible test
 //! fixtures and keep the witness-bearing export in local scratch storage.
+//! `query-msm-synthetic` compares both MSMs and exports the same ordered format
+//! with seeded BN254 subgroup points and scalars. The first scalar is one,
+//! as required by the query adapters. Generation and export are outside timing.
+//! Label this as synthetic kernel evidence, separate from Privacy Rings vectors
+//! and proof timings.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
@@ -330,6 +336,10 @@ fn main() {
         }
         "query-msm-export" => {
             query_msm::export(&args[2..]);
+            return;
+        }
+        "query-msm-synthetic" => {
+            query_msm::synthetic(&args[2..]);
             return;
         }
         _ => {}

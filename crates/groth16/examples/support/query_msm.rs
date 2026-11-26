@@ -5,9 +5,11 @@ use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
-use ark_bn254::{Bn254, G1Affine, G1Projective, G2Affine, G2Projective};
+use ark_bn254::{Bn254, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
 use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
-use ark_ff::{BigInteger, PrimeField};
+use ark_ff::{BigInteger, PrimeField, UniformRand};
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 use xark_groth16::msm::{self, Scalar, SwCurve};
 use xark_groth16::{BytecodeSource, ConstraintSource, ProvingKey};
 
@@ -113,18 +115,32 @@ pub(super) fn run(args: &[String], xark_only: bool) {
         );
     };
     let (samples, warmups) = counts(options).unwrap_or_else(|reason| panic!("{reason}"));
-    assert!(!super::tracking(), "set BENCH_TIME=1 to time query MSMs");
-    if std::env::var("NO_GLV").is_ok() {
-        msm::GLV.store(false, Relaxed);
-    }
+    configure_timing();
 
     let (pk, scalars) = load(xbc_path, pk_path, Path::new(directory));
     if xark_only {
         run_xark(&pk, &scalars, samples, warmups);
         return;
     }
-    let b1 = measure::<G1Projective>("b1", &pk.b_g1_query, &scalars, samples, warmups);
-    let b2 = measure::<G2Projective>("b2", &pk.b_g2_query, &scalars, samples, warmups);
+    run_compared(&pk.b_g1_query, &pk.b_g2_query, &scalars, samples, warmups);
+}
+
+fn configure_timing() {
+    assert!(!super::tracking(), "set BENCH_TIME=1 to time query MSMs");
+    if std::env::var("NO_GLV").is_ok() {
+        msm::GLV.store(false, Relaxed);
+    }
+}
+
+fn run_compared(
+    b1: &[G1Affine],
+    b2: &[G2Affine],
+    scalars: &[Scalar],
+    samples: usize,
+    warmups: usize,
+) {
+    let b1 = measure::<G1Projective>("b1", b1, scalars, samples, warmups);
+    let b2 = measure::<G2Projective>("b2", b2, scalars, samples, warmups);
 
     println!(
         "query msm verified: terms={} threads={} samples={samples} warmups={warmups} xark_glv={} xark_batch_affine={}",
@@ -144,6 +160,47 @@ pub(super) fn run(args: &[String], xark_only: bool) {
             );
         }
     }
+}
+
+fn synthetic_vectors(terms: u32, seed: u64) -> (Vec<Scalar>, Vec<G1Affine>, Vec<G2Affine>) {
+    let mut rng = ChaCha20Rng::seed_from_u64(seed);
+    let mut scalars = Vec::with_capacity(terms as usize);
+    let mut b1 = Vec::with_capacity(terms as usize);
+    let mut b2 = Vec::with_capacity(terms as usize);
+    let g1 = G1Affine::generator();
+    let g2 = G2Affine::generator();
+    for index in 0..terms {
+        let scalar = if index == 0 {
+            Fr::from(1u64)
+        } else {
+            Fr::rand(&mut rng)
+        };
+        scalars.push(scalar.into_bigint());
+        b1.push(g1.mul_bigint(Fr::rand(&mut rng).into_bigint()));
+        b2.push(g2.mul_bigint(Fr::rand(&mut rng).into_bigint()));
+    }
+    (
+        scalars,
+        G1Projective::normalize_batch(&b1),
+        G2Projective::normalize_batch(&b2),
+    )
+}
+
+pub(super) fn synthetic(args: &[String]) {
+    let [terms, seed, output, options @ ..] = args else {
+        panic!(
+            "usage: bench_prove query-msm-synthetic <terms> <seed> <new-output-file> [samples] [warmups]"
+        );
+    };
+    let terms: u32 = terms.parse().expect("parse synthetic term count as u32");
+    assert!(terms > 0, "synthetic term count must be positive");
+    let seed: u64 = seed.parse().expect("parse synthetic seed as u64");
+    let (samples, warmups) = counts(options).unwrap_or_else(|reason| panic!("{reason}"));
+    configure_timing();
+    let (scalars, b1, b2) = synthetic_vectors(terms, seed);
+    println!("query msm synthetic fixture: terms={terms} seed={seed}");
+    run_compared(&b1, &b2, &scalars, samples, warmups);
+    write_export(output, &scalars, &b1, &b2);
 }
 
 fn measure_xark<G: SwCurve>(
@@ -253,13 +310,16 @@ pub(super) fn export(args: &[String]) {
         );
     };
     let (pk, scalars) = load(xbc_path, pk_path, Path::new(directory));
+    write_export(output, &scalars, &pk.b_g1_query, &pk.b_g2_query);
+}
+
+fn write_export(output: &str, scalars: &[Scalar], b1: &[G1Affine], b2: &[G2Affine]) {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     let mut out = BufWriter::new(options.open(output).expect("create the new query export"));
-    write_vectors(&mut out, &scalars, &pk.b_g1_query, &pk.b_g2_query)
-        .expect("write the query export");
+    write_vectors(&mut out, scalars, b1, b2).expect("write the query export");
     out.flush().expect("flush the query export");
     println!("exported query MSM fixture: terms={}", scalars.len());
 }
@@ -267,7 +327,7 @@ pub(super) fn export(args: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_bn254::{Fq, Fr};
+    use ark_bn254::Fq;
 
     #[test]
     fn counts_check_the_number_of_measured_iterations() {
@@ -324,5 +384,31 @@ mod tests {
         assert_eq!(&records[224 + 30..224 + 32], &[2, 1]);
         assert!(records[224 + 32..].iter().all(|byte| *byte == 0));
         assert_eq!(&bytes[12 + 2 * 224..], &records[32..224]);
+    }
+
+    #[test]
+    fn synthetic_vectors_are_seeded_and_verify_on_both_groups() {
+        let (scalars, b1, b2) = synthetic_vectors(8, 42);
+        assert_eq!((scalars.len(), b1.len(), b2.len()), (8, 8, 8));
+        assert_eq!(scalars[0], Fr::from(1u64).into_bigint());
+        assert_eq!(
+            synthetic_vectors(8, 42),
+            (scalars.clone(), b1.clone(), b2.clone())
+        );
+        assert_ne!(synthetic_vectors(8, 43).0, scalars);
+        assert!(
+            b1.iter()
+                .all(|point| point.is_in_correct_subgroup_assuming_on_curve())
+        );
+        assert!(
+            b2.iter()
+                .all(|point| point.is_in_correct_subgroup_assuming_on_curve())
+        );
+        assert_eq!(measure::<G1Projective>("b1", &b1, &scalars, 1, 0).len(), 1);
+        assert_eq!(measure::<G2Projective>("b2", &b2, &scalars, 1, 0).len(), 1);
+        let mut bytes = Vec::new();
+        write_vectors(&mut bytes, &scalars, &b1, &b2).unwrap();
+        assert_eq!(&bytes[..12], b"XKQMSM01\x08\x00\x00\x00");
+        assert_eq!(bytes.len(), 12 + 8 * 224 + 64 + 128);
     }
 }
