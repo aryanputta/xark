@@ -24,6 +24,7 @@ ARITHMETIC_FACTORS = (
     ("BENCH_G2_TRIM_INVERSE_ENDPOINTS", "bench g2 trim inverse endpoints"),
     ("BENCH_G2_SPARSE_ENDOMORPHISM", "bench g2 sparse endomorphism"),
 )
+SHARED_B_FACTOR = ("BENCH_SHARED_B_SCALARS", "bench shared B scalars")
 PRECOMPUTE = {
     "shifted": (
         "BENCH_G2_SHIFTED",
@@ -89,7 +90,7 @@ def paired_interval(deltas, seed):
     return [medians[249], medians[9749]]
 
 
-def summarize(runner, path, runs, seed, precompute):
+def summarize(runner, path, runs, seed, precompute, shared_b=False):
     with path.open(newline="") as stream:
         samples = list(csv.DictReader(stream))
     result = {}
@@ -113,7 +114,9 @@ def summarize(runner, path, runs, seed, precompute):
                         ]
                         for block in blocks
                     }
-                    for choice in {0, arm, arm & ~4}
+                    for choice in (
+                        {0, arm, arm & ~4, arm & ~2} if shared_b else {0, arm, arm & ~4}
+                    )
                 }
                 deltas = [
                     statistics.median(series[0][block])
@@ -135,6 +138,18 @@ def summarize(runner, path, runs, seed, precompute):
                     ]
                     value[paired_key] = statistics.median(precompute_savings)
                     value[interval_key] = paired_interval(precompute_savings, seed)
+                if shared_b and arm & 2:
+                    savings = [
+                        statistics.median(series[arm & ~2][block])
+                        - statistics.median(series[arm][block])
+                        for block in blocks
+                    ]
+                    value["median_paired_shared_b_savings_ns"] = statistics.median(
+                        savings
+                    )
+                    value[
+                        "paired_block_shared_b_savings_interval_ns"
+                    ] = paired_interval(savings, seed)
                 metrics[field] = value
             steps = [runs_by_arm[workload, block, arm] for block in blocks]
             setup = [step["setup"]["ns"] for step in steps if step["setup"] is not None]
@@ -239,7 +254,13 @@ def run(args):
     args.output = args.output.resolve()
     args.output.mkdir(mode=0o700)
     env = os.environ.copy()
-    for key in ("NO_BATCH_AFFINE", "NO_GLV", "CHECK", "BENCH_ESCROW_STATEMENTS"):
+    for key in (
+        "NO_BATCH_AFFINE",
+        "NO_GLV",
+        "CHECK",
+        "BENCH_ESCROW_STATEMENTS",
+        SHARED_B_FACTOR[0],
+    ):
         env.pop(key, None)
     env.update(
         BENCH_TIME="1",
@@ -252,7 +273,10 @@ def run(args):
     for setting, _ in PRECOMPUTE.values():
         env[setting] = "0"
     precompute_setting, _ = PRECOMPUTE[args.precompute]
-    factor_settings = [name for name, _ in ARITHMETIC_FACTORS] + [precompute_setting]
+    if args.shared_b:
+        env[ARITHMETIC_FACTORS[1][0]] = "0"
+    second_factor = SHARED_B_FACTOR if args.shared_b else ARITHMETIC_FACTORS[1]
+    factor_settings = [ARITHMETIC_FACTORS[0][0], second_factor[0], precompute_setting]
     rng = random.Random(args.seed)
     ranks = list(range(8))
     rng.shuffle(ranks)
@@ -386,7 +410,12 @@ def run(args):
                     )
     runner.require(runner.digest(binary) == binary_hash, "binary changed during run")
     report["statistics"] = summarize(
-        runner, args.output / "samples.csv", report["runs"], args.seed, args.precompute
+        runner,
+        args.output / "samples.csv",
+        report["runs"],
+        args.seed,
+        args.precompute,
+        args.shared_b,
     )
     report["performance_eligible"] = not args.diagnostic
     if args.diagnostic:
@@ -420,9 +449,17 @@ def parse_trial(runner, log, settings, args):
         re.search(r"^resident CPU: .* merge_below=0 merged=false$", log, re.M),
         "split CPU mode receipt missing",
     )
-    for name, marker in ARITHMETIC_FACTORS:
+    required_factors = ARITHMETIC_FACTORS
+    if SHARED_B_FACTOR[0] in settings:
+        required_factors += (SHARED_B_FACTOR,)
         runner.require(
-            f"{marker}: {settings[name]}" in log.splitlines(),
+            f"warm proofs verified by Arkworks and Xark: xark-groth16 warmups={args.warmups} measured={args.samples}"
+            in log.splitlines(),
+            "warmup or measured proof verification receipt missing",
+        )
+    for name, marker in required_factors:
+        runner.require(
+            f"{marker}: {settings.get(name, '0')}" in log.splitlines(),
             f"{name} receipt mismatch",
         )
     setup = None
@@ -463,6 +500,11 @@ def main():
     parser.add_argument("--diagnostic", action="store_true")
     parser.add_argument("--perf-counters", action="store_true")
     parser.add_argument("--precompute", choices=PRECOMPUTE, default="shifted")
+    parser.add_argument(
+        "--shared-b",
+        action="store_true",
+        help="Use request-local shared B scalars as arm bit 2",
+    )
     parser.add_argument("--topology", choices=("siblings", "distinct"))
     args = parser.parse_args()
     if (
