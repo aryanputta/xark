@@ -286,11 +286,12 @@ impl CachedImages {
         &self,
         recoder: &Recoder,
         scalars: &[Scalar],
-    ) -> Zeroizing<Vec<Scalar>> {
+    ) -> Zeroizing<Box<[Scalar]>> {
         assert_eq!(self.points.len() / IMAGES, scalars.len());
         // Put the backing allocation under the wipe guard before copying any
         // witness-derived values into it, including during Rayon unwinding.
-        let mut parts = Zeroizing::new(vec![Scalar::default(); self.points.len()]);
+        let mut parts =
+            Zeroizing::new(vec![Scalar::default(); self.points.len()].into_boxed_slice());
         parts
             .par_chunks_exact_mut(IMAGES)
             .zip(self.points.par_chunks_exact(IMAGES))
@@ -421,8 +422,8 @@ pub(crate) fn run<const FIXED: bool>(args: &[String]) {
         super::timed(|| CachedImages::new(bases).expect("prepare signed GLS bases"));
     if FIXED {
         assert!(
-            cache.recode::<false>(&recoder, &scalars).as_slice()
-                == cache.recode::<true>(&recoder, &scalars).as_slice(),
+            cache.recode::<false>(&recoder, &scalars)[..]
+                == cache.recode::<true>(&recoder, &scalars)[..],
             "fixed-width and division recodings differ on the fixture"
         );
     }

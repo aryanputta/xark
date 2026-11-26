@@ -2,7 +2,7 @@ name: Shared B scalar Linux correctness
 
 on:
   push:
-    branches: [perf/request-local-b-scalars, perf/g2-public-validation, perf/g2-gls-scratch-wipe]
+    branches: [perf/request-local-b-scalars, perf/g2-public-validation, perf/g2-gls-boxed-scratch]
 
 permissions:
   contents: read
