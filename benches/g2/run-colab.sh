@@ -7,8 +7,33 @@ archive=${1:?provide the uploaded aaa-xark-offline-fixtures.tar.gz}
 out=${2:?provide a new output directory}
 samples=${3:-30}
 policy=${4:-auto}
+experiment=${5:-inverse-lanes}
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-candidate=1dc7867c873f8d9f5b8cef5e6cbca61a25ae7c07
+case "$experiment" in
+    inverse-lanes)
+        branch=perf/privacy-rings-g2-inverse-lanes
+        candidate=1dc7867c873f8d9f5b8cef5e6cbca61a25ae7c07
+        checkout=xark-g2
+        feature=msm-g2-inverse-bench
+        parameter=BENCH_G2_INVERSE_LANES
+        value=2
+        receipt="bench g2 inverse lanes: 2"
+        ;;
+    inverse-endpoints)
+        branch=perf/privacy-rings-g2-inverse-endpoints
+        candidate=aee021c71aa9745ee370f7e3186fce5e70140a96
+        checkout=xark-g2-endpoints
+        feature=msm-g2-endpoint-bench
+        parameter=BENCH_G2_TRIM_INVERSE_ENDPOINTS
+        value=1
+        receipt="bench g2 trim inverse endpoints: 1"
+        ;;
+    *)
+        echo "Choose inverse-lanes or inverse-endpoints" >&2
+        exit 1
+        ;;
+esac
+unset BENCH_G2_INVERSE_LANES BENCH_G2_TRIM_INVERSE_ENDPOINTS
 runner=225735659def0780b268e481794a24d1e3196eea
 examples=9e5d69ade7e0c107a2929306d3b758a8969e1089
 fixture_hash=82caa7cee2b155afc2bd32cdc9661ba8cfb758888f4837bf9d6af31eb05c36a7
@@ -32,7 +57,7 @@ pin_checkout() {
     [[ $(git -C "$checkout" rev-parse HEAD) == "$revision" ]]
 }
 
-pin_checkout https://github.com/aryanputta/xark.git perf/privacy-rings-g2-inverse-lanes "$candidate" xark-g2
+pin_checkout https://github.com/aryanputta/xark.git "$branch" "$candidate" "$checkout"
 pin_checkout https://github.com/aryanputta/xark.git review/competitive-benchmark-harness-v05 "$runner" xark-bench-runner
 if [[ ! -d xark-privacy-examples/.git ]]; then
     git init -q xark-privacy-examples
@@ -52,12 +77,12 @@ else
     unset RUSTFLAGS
 fi
 (
-    cd xark-g2
+    cd "$checkout"
     rustup run 1.94.1 cargo build --locked --release -j 2 -p xark-groth16 \
-        --features msm-g2-inverse-bench --example bench_prove
+        --features "$feature" --example bench_prove
 ) 2>&1 | tee "$out/build.log"
 
-python3 - "$archive" "$out" "$candidate" "$examples" <<'PY'
+python3 - "$archive" "$out" "$candidate" "$examples" "$checkout" "$parameter" "$value" "$receipt" <<'PY'
 import hashlib
 import json
 import os
@@ -66,7 +91,7 @@ import subprocess
 import sys
 import tarfile
 
-archive, output, commit, examples = sys.argv[1:]
+archive, output, commit, examples, checkout, parameter, value, receipt = sys.argv[1:]
 root = Path.cwd()
 output = Path(output)
 fixture = output / "fixtures"
@@ -92,8 +117,8 @@ with tarfile.open(archive, "r:gz") as data:
 if seen != expected.keys():
     raise ValueError("fixture archive is incomplete")
 
-xark = {"path": str(root / "xark-g2"), "commit": commit}
-binary = str(root / "xark-g2/target/release/examples/bench_prove")
+xark = {"path": str(root / checkout), "commit": commit}
+binary = str(root / checkout / "target/release/examples/bench_prove")
 config = {
     "version": 1, "fixtures": str(fixture),
     "sources": {
@@ -102,8 +127,8 @@ config = {
     },
     "binaries": {"bench": binary},
     "candidate": {
-        "binary": binary, "environment": {"BENCH_G2_INVERSE_LANES": "2"},
-        "receipt": "bench g2 inverse lanes: 2",
+        "binary": binary, "environment": {parameter: value},
+        "receipt": receipt,
     },
     "toolchains": {
         "rustc": subprocess.check_output(["rustup", "run", "1.94.1", "rustc", "-Vv"], text=True),

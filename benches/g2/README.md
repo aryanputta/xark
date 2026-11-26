@@ -106,3 +106,5 @@ An identical-binary control verified 120 withdrawal B2 samples. The nominal seco
 | MSM-10 | Compare the accepted changes with unchanged proving and verification settings on both real fixtures. |
 
 The Colab runner accepts `smt`, `physical` or `auto` as its fourth argument. Each mode records the Linux guest's allowed CPU set and reported core topology in `affinity.json`. The explicit modes fail if the required topology is unavailable. Virtualized core IDs describe the guest and may not establish underlying physical placement. Use the same runtime for both modes before drawing a placement conclusion.
+
+The optional fifth argument selects the pinned `inverse-lanes` default or `inverse-endpoints`. Both profiles use the same fixture and correctness gates. Each experiment has a separate checkout.
