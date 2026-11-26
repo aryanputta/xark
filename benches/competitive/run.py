@@ -476,6 +476,18 @@ def run_suite(args):
             files[name] = (root / config["binaries"][name]).resolve(strict=True)
             if name not in {"rapidsnark_library", *BINARY_NAMES["icicle"][1:]}:
                 require(os.access(files[name], os.X_OK), f"{name} must be executable")
+    if "gnark" in lanes:
+        require(
+            "gnark_verifier" in config["binaries"],
+            "direct Gnark pairing requires an independent verifier",
+        )
+        files["gnark_verifier"] = (root / config["binaries"]["gnark_verifier"]).resolve(
+            strict=True
+        )
+        require(
+            os.access(files["gnark_verifier"], os.X_OK),
+            "gnark_verifier must be executable",
+        )
     candidate_env = {}
     if candidate:
         candidate_env = candidate.get("environment", {})
@@ -530,6 +542,7 @@ def run_suite(args):
         name: value
         for name, value in os.environ.items()
         if name not in BENCH_ENV
+        and name != "GNARK_PROOF_RECEIPT"
         and not name.startswith(("BENCH_", "RAYON_", "OMP_", "GOMAXPROCS"))
     }
     budget = str(args.threads)
@@ -796,14 +809,26 @@ def run_suite(args):
                         arms.reverse()
                 medians = {}
                 arm_statistics = {}
+                gnark_receipt = None
                 for order, (backend, argv, additions) in enumerate(arms, 1):
                     label = f"{workload}-{competitor}-{index + 1}-{backend}"
+                    if gnark_candidate and backend == "gnark":
+                        gnark_receipt = output / f"{label}-public-proofs.json"
+                        additions = additions | {
+                            "GNARK_PROOF_RECEIPT": str(gnark_receipt)
+                        }
                     log = invoke(argv, label, additions=additions, measured=True)
                     parser_backend = "xark" if backend == "xark-candidate" else backend
                     if backend == "xark-candidate" and candidate.get("receipt"):
                         require(
                             candidate["receipt"] in log.splitlines(),
                             f"{label} missing candidate receipt",
+                        )
+                    if gnark_candidate and backend == "xark-candidate":
+                        require(
+                            f"warm proofs verified by Arkworks and Xark: xark-groth16 warmups={args.warmups} measured={args.samples}"
+                            in log.splitlines(),
+                            f"{label} missing complete Xark proof verification receipt",
                         )
                     if queries:
                         timings = query_samples(
@@ -864,6 +889,36 @@ def run_suite(args):
                             )
                             for sample, duration in enumerate(times, 1)
                         )
+                if gnark_receipt is not None:
+                    expected = args.samples + args.warmups
+                    require(
+                        gnark_receipt.is_file(),
+                        "Gnark adapter did not emit its public proof receipt",
+                    )
+                    receipt_hash = digest(gnark_receipt)
+                    verification = invoke(
+                        (
+                            files["gnark_verifier"],
+                            gnark_receipt,
+                            public,
+                            altered,
+                            expected,
+                        ),
+                        f"{workload}-gnark-{index + 1}-arkworks",
+                    )
+                    marker = f"Arkworks verified {expected} Gnark proofs and rejected every altered statement"
+                    require(
+                        verification.splitlines().count(marker) == 1,
+                        "missing independent Gnark proof check",
+                    )
+                    require(
+                        digest(gnark_receipt) == receipt_hash,
+                        "Gnark receipt changed during independent verification",
+                    )
+                    report["artifacts"][gnark_receipt.name] = {
+                        "sha256": receipt_hash,
+                        "path": str(gnark_receipt),
+                    }
                 ratios = None
                 if adapter and competitor != "rapidsnark":
                     ratios = {

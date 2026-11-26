@@ -40,6 +40,8 @@ To compare the candidate directly with Gnark, set `candidate.lanes` to `["gnark"
 
 Live candidate/Gnark runs require Linux, `--strict-contention`, and affinity containing exactly `--threads` CPUs. Use `--smoke` for a local correctness replay. Keep the run directory private because the exported witness is retained alongside the public logs.
 
+The direct lane also requires `binaries.gnark_verifier` and a receipt-capable Gnark adapter from `test/gnark-proof-receipts`. Build the independent verifier with `cargo build --locked --release -p xark-groth16 --example verify_gnark_receipt`. After each pair, Arkworks checks every Gnark warmup and measured proof against the pinned fixture statement and its altered statement. The separate receipt contains only public verifying-key points and proof points. For commitment-free BN254, the key tuple is alpha G1, beta G2, gamma G2, delta G2 and the two public-input G1 coefficients. Each proof tuple contains A, B and C. G2 coordinates are in `x.c0, x.c1, y.c0, y.c1` order. Unsupported commitments and invalid points fail the check. The receipt verifies proofs against the bridge's generated key. Its relation provenance still comes from the pinned deterministic export and adapter.
+
 ```sh
 python3 -m unittest discover -s benches/competitive -v
 ```

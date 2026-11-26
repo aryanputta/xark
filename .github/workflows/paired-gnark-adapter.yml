@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/checkout@v5
         with:
-          ref: dc8ad92e0bdf34da5d614b39125127ce91aa116b
+          ref: d807df8a6c9f2b1de15cc4aaf39f844cd8ba2e17
           path: adapter-source
       - uses: actions/setup-go@v5
         with:
@@ -36,6 +36,23 @@ jobs:
           cd "$out"
           go version -m gnark-linux-amd64 gnark-darwin-amd64 > build-info.txt
           sha256sum gnark-linux-amd64 gnark-darwin-amd64 > SHA256SUMS
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check the independent verifier with real Gnark proofs
+        run: |
+          cargo test --locked --profile ci -p xark-groth16 --example verify_gnark_receipt
+          cargo build --locked --profile ci -p xark-groth16 --example verify_gnark_receipt
+          fixture="$RUNNER_TEMP/interop"
+          python3 benches/competitive/make_gnark_interop_fixture.py "$fixture"
+          GNARK_PROOF_RECEIPT="$fixture/proofs.json" artifact/gnark-linux-amd64 \
+            "$fixture/circuit.r1cs" "$fixture/witness.wtns" \
+            "$fixture/public.json" "$fixture/public-changed.json" 2 2 1
+          target/ci/examples/verify_gnark_receipt "$fixture/proofs.json" \
+            "$fixture/public.json" "$fixture/public-changed.json" 3
+          if target/ci/examples/verify_gnark_receipt "$fixture/proofs.json" \
+            "$fixture/public-changed.json" "$fixture/public.json" 3; then
+            echo 'unexpectedly accepted the altered statement' >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: pinned-gnark-adapters
