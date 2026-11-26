@@ -6,8 +6,8 @@
 //! bench_prove ark    <circuit.xbc> <pk.bin> <inputs.json> [--reduced]
 //! bench_prove stream <circuit.xbc> <pk.bin> <inputs.json> [--source xbc|min] [--tile N] [--chunk N]
 //! ```
-//! `BENCH_MERGE_BELOW=N` selects the merged MSM threshold for `warm` and
-//! `proof-hex` runs, allowing identical fixture runs on either proving path.
+//! `BENCH_MERGE_BELOW=N` selects the merged MSM threshold for `warm`, `phases`,
+//! and `proof-hex` runs, allowing identical fixture runs on either proving path.
 //! `--reduced` / `--source xbc` prove the template-reduced circuit (key from
 //! `setup-reduced`); otherwise the boundary-minimized circuit `xark setup` keys.
 
@@ -383,7 +383,7 @@ fn main() {
         let z = src.layout().assignment_from_map(&assign);
         let cfg = ProverConfig {
             self_check: std::env::var("CHECK").is_ok(),
-            ..ProverConfig::default()
+            ..bench_prover_config()
         };
         let mut totals = Vec::new();
         for i in 0..runs {
