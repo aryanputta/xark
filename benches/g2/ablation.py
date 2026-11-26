@@ -20,11 +20,26 @@ FIXTURE_MANIFEST_SHA256 = (
 )
 ORDER = (0, 1, 7, 2, 6, 3, 5, 4)
 WORKLOADS = ("escrow", "withdrawal")
-FACTORS = (
+ARITHMETIC_FACTORS = (
     ("BENCH_G2_TRIM_INVERSE_ENDPOINTS", "bench g2 trim inverse endpoints"),
     ("BENCH_G2_SPARSE_ENDOMORPHISM", "bench g2 sparse endomorphism"),
-    ("BENCH_G2_SHIFTED", "bench g2 shifted"),
 )
+PRECOMPUTE = {
+    "shifted": (
+        "BENCH_G2_SHIFTED",
+        re.compile(
+            r"^bench g2 shifted: 1 setup_ns=(?P<ns>\d+) table_payload_bytes=(?P<table_payload_bytes>\d+)$",
+            re.M,
+        ),
+    ),
+    "cached-gls": (
+        "BENCH_G2_CACHED_GLS",
+        re.compile(
+            r"^bench g2 cached GLS: 1 rounding=fixed-limb subgroup_points=(?P<subgroup_points>\d+) setup_ns=(?P<ns>\d+) table_payload_bytes=(?P<table_payload_bytes>\d+)$",
+            re.M,
+        ),
+    ),
+}
 PERF_EVENTS = (
     "cycles",
     "instructions",
@@ -62,10 +77,13 @@ def paired_interval(deltas, seed):
     return [medians[249], medians[9749]]
 
 
-def summarize(runner, path, runs, seed):
+def summarize(runner, path, runs, seed, precompute):
     with path.open(newline="") as stream:
         samples = list(csv.DictReader(stream))
     result = {}
+    factor = "shift" if precompute == "shifted" else "cached_gls"
+    paired_key = f"median_paired_{factor}_savings_ns"
+    interval_key = f"paired_block_{factor}_savings_interval_ns"
     runs_by_arm = {(r["workload"], r["block"], r["arm"]): r for r in runs}
     for workload in WORKLOADS:
         filtered = [row for row in samples if row["workload"] == workload]
@@ -98,22 +116,20 @@ def summarize(runner, path, runs, seed):
                     deltas, seed
                 )
                 if arm & 4:
-                    shifted_savings = [
+                    precompute_savings = [
                         statistics.median(series[arm & ~4][block])
                         - statistics.median(series[arm][block])
                         for block in blocks
                     ]
-                    value["median_paired_shift_savings_ns"] = statistics.median(
-                        shifted_savings
-                    )
-                    value["paired_block_shift_savings_interval_ns"] = paired_interval(
-                        shifted_savings, seed
-                    )
+                    value[paired_key] = statistics.median(precompute_savings)
+                    value[interval_key] = paired_interval(precompute_savings, seed)
                 metrics[field] = value
             steps = [runs_by_arm[workload, block, arm] for block in blocks]
             setup = [step["setup"]["ns"] for step in steps if step["setup"] is not None]
-            metrics["p50_shift_setup_ns"] = statistics.median(setup) if setup else None
-            metrics["retained_shift_payload_bytes"] = sorted(
+            metrics[f"p50_{factor}_setup_ns"] = (
+                statistics.median(setup) if setup else None
+            )
+            metrics[f"retained_{factor}_payload_bytes"] = sorted(
                 {
                     step["setup"]["table_payload_bytes"]
                     for step in steps
@@ -125,10 +141,8 @@ def summarize(runner, path, runs, seed):
                 max(observed_rss) if None not in observed_rss else None
             )
             if arm & 4:
-                savings = metrics["proof_ns"]["median_paired_shift_savings_ns"]
-                low_interval = metrics["proof_ns"][
-                    "paired_block_shift_savings_interval_ns"
-                ]
+                savings = metrics["proof_ns"][paired_key]
+                low_interval = metrics["proof_ns"][interval_key]
                 metrics["setup_divided_by_paired_proof_savings"] = (
                     math.ceil(statistics.median(setup) / savings)
                     if savings > 0
@@ -207,6 +221,10 @@ def run(args):
         BENCH_RESIDENT_PROFILE="1",
         RAYON_NUM_THREADS=str(args.threads),
     )
+    for setting, _ in PRECOMPUTE.values():
+        env[setting] = "0"
+    precompute_setting, _ = PRECOMPUTE[args.precompute]
+    factor_settings = [name for name, _ in ARITHMETIC_FACTORS] + [precompute_setting]
     rng = random.Random(args.seed)
     ranks = list(range(8))
     rng.shuffle(ranks)
@@ -220,6 +238,8 @@ def run(args):
         "seed": args.seed,
         "threads": args.threads,
         "diagnostic": args.diagnostic,
+        "precompute": args.precompute,
+        "arm_bits": factor_settings,
         "perf_scope": "whole benchmark process, including setup and verification"
         if args.perf_counters
         else None,
@@ -259,7 +279,7 @@ def run(args):
                     label = f"{workload}-block-{block}-arm-{arm}"
                     settings = {
                         name: str((arm >> index) & 1)
-                        for index, (name, _) in enumerate(FACTORS)
+                        for index, name in enumerate(factor_settings)
                     }
                     invocation = command
                     counters = None
@@ -295,9 +315,9 @@ def run(args):
                         )
                     if counters is not None:
                         verify_counters(runner, counters)
-                        contention["sampled_peak_rss_kib"] = (
-                            None  # sampler sees the perf wrapper
-                        )
+                        contention[
+                            "sampled_peak_rss_kib"
+                        ] = None  # sampler sees the perf wrapper
                     rows, setup = parse_trial(runner, log, settings, args)
                     for sample, (proof, start, b2, peer_end) in enumerate(rows, 1):
                         writer.writerow(
@@ -336,7 +356,7 @@ def run(args):
                     )
     runner.require(runner.digest(binary) == binary_hash, "binary changed during run")
     report["statistics"] = summarize(
-        runner, args.output / "samples.csv", report["runs"], args.seed
+        runner, args.output / "samples.csv", report["runs"], args.seed, args.precompute
     )
     report["performance_eligible"] = not args.diagnostic
     if args.diagnostic:
@@ -370,22 +390,20 @@ def parse_trial(runner, log, settings, args):
         re.search(r"^resident CPU: .* merge_below=0 merged=false$", log, re.M),
         "split CPU mode receipt missing",
     )
-    for name, marker in FACTORS[:2]:
+    for name, marker in ARITHMETIC_FACTORS:
         runner.require(
             f"{marker}: {settings[name]}" in log.splitlines(),
             f"{name} receipt mismatch",
         )
-    matches = re.findall(
-        r"^bench g2 shifted: 1 setup_ns=(\d+) table_payload_bytes=(\d+)$", log, re.M
-    )
-    runner.require(
-        len(matches) == int(settings["BENCH_G2_SHIFTED"]), "shifted B2 receipt mismatch"
-    )
-    setup = (
-        dict(zip(("ns", "table_payload_bytes"), map(int, matches[0])))
-        if matches
-        else None
-    )
+    setup = None
+    for name, (setting, pattern) in PRECOMPUTE.items():
+        matches = list(pattern.finditer(log))
+        runner.require(
+            len(matches) == int(settings.get(setting, "0")),
+            f"{name} B2 receipt mismatch",
+        )
+        if matches:
+            setup = {key: int(value) for key, value in matches[0].groupdict().items()}
     spans = {index: {} for index in range(1, args.samples + 1)}
     for sample, name, start, elapsed in SPAN.findall(log):
         trial = spans[int(sample)]
@@ -414,6 +432,7 @@ def main():
     parser.add_argument("--contention-percent", type=float, default=20)
     parser.add_argument("--diagnostic", action="store_true")
     parser.add_argument("--perf-counters", action="store_true")
+    parser.add_argument("--precompute", choices=PRECOMPUTE, default="shifted")
     args = parser.parse_args()
     if (
         min(
