@@ -37,7 +37,7 @@ The only Eisenstein integer in this range is zero. This gives an all-scalar zero
 
 The table counts 19 affine entries per point including the original and 18 successive radix maps. One radix map can use a joint binary schedule for $[-87]P+[-149]\phi(P)$ with seven doubles, one subset addition, and five accumulator additions. Computing $\phi(P)$ is two base-field multiplications. A straightforward table builder would repeat that schedule for each successive entry before batch normalization. A nonzero digit requires an indexed table read, one optional sign, at most one sparse cubic map for a unit power using a prederived field constant, and one bucket accumulation.
 
-The 2,801 nonzero buckets imply 537,792 bytes of projective coordinate payload at 192 bytes each. A dense 16-bit residue table would consume 33,614 bytes for a 12-bit bucket ID and a three-bit unit ID. These counts exclude coordinates for queue or scratch state, alignment, the rest of the key, and process RSS. Le and Sica's short-edge Hamiltonian path supplies a further reduction cost of roughly 2,801 suffix steps and short difference actions. This reference has verified coverage and recoding. That path and real-fixture performance remain open. [Le and Sica, Theorem 2 and Table 1](https://opencryptology.org/2026/1902.pdf)
+The 2,801 nonzero buckets imply 537,792 bytes of projective coordinate payload at 192 bytes each. A dense 16-bit residue table would consume 33,614 bytes for a 12-bit bucket ID and a three-bit unit ID. These counts exclude coordinates for queue or scratch state, alignment, the rest of the key, and process RSS. The deterministic short-edge reduction for this specific representative set is described below. Real-fixture performance remains open. [Le and Sica, Theorem 2 and Table 1](https://opencryptology.org/2026/1902.pdf)
 
 ### Normalized nonzero bucket submissions
 
@@ -49,3 +49,19 @@ The archived Xark occupancy counter named `adds` increments once for each nonzer
 | Withdrawal | 4,282 | 102,579 | 23.956 | 81,358 | 19 |
 
 These denominators exclude the non-GLV classes. A submission may cause an initial write, a batch-affine addition, or a projective spill, with different group arithmetic costs. The single hexagonal bucket array also needs a reduction and could concentrate submissions that Xark spreads across 12 windows. The table isolates one stage's amount of work. [Xark escrow occupancy](/Users/srini/xark-sprint/evidence/benchmark-lab/2026-11-26-macos-g2-affine-occupancy/escrow-0.log) · [Xark withdrawal occupancy](/Users/srini/xark-sprint/evidence/benchmark-lab/2026-11-26-macos-g2-affine-occupancy/withdrawal-0.log)
+
+## Deterministic c=5 bucket reduction
+
+Order the independently enumerated representatives by increasing $a-b$, sorting each row by increasing $a$ for odd $a-b$ and decreasing $a$ for even $a-b$. The zero bucket is the first row by itself. Exhaustive checks for this exact alphabet give 2,801 unique nonzero vertices following zero and just five oriented step differences.
+
+| Step | Occurrences | Eisenstein squared norm |
+| --- | ---: | ---: |
+| $1+\omega=-\omega^2$ | 1,382 | 1 |
+| $-1-\omega=\omega^2$ | 1,348 | 1 |
+| $1$ | 40 | 1 |
+| $-\omega$ | 28 | 1 |
+| $-1-2\omega=\omega^2-\omega$ | 3 | 3 |
+
+For ordered buckets $b_0=0,b_1,\ldots,b_m$ with contents $S_i$, define suffix $T_i=\sum_{j=i}^{m}S_j$. Then $\sum_i[b_i]S_i=\sum_i[b_i-b_{i-1}]T_i$ by telescoping. Accumulate the suffixes once for each of the five different steps. Combine the $\pm\omega^2$ accumulators with a subtraction before their shared sparse map. The nonunit step applies $\phi^2-\phi$, with two sparse maps and one subtraction.
+
+The dense reduction bound is **5,601 group additions and four sparse maps**, equivalent to eight base-field multiplications for the maps. Count 2,800 suffix adds, 2,796 adds to the five difference accumulators, and five group adds for the final combination. The first assignment to each accumulator is counted as zero arithmetic. Numerically equal inputs can turn a point addition into a doubling, and cancellations or infinity can save work. The raw bound treats every nontrivial group operation as one, irrespective of formula. If all 2,801 buckets are occupied, $F$ nonzero digit submissions require at most $F-2801$ group additions to fill them, giving $F+2800$ modeled group additions across fill and reduction. This excludes per-digit unit maps, key preparation, batching and memory costs. No elapsed-time conversion was made. The test enumerates the edges and checks the reduction against a direct weighted subgroup sum, including an empty map and an infinity bucket.

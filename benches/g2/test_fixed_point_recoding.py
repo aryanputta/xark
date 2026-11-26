@@ -1,6 +1,7 @@
 """Exhaust small residue rings and compare the scalar action with an oracle."""
 
 from collections import Counter
+from itertools import pairwise
 import random
 import unittest
 
@@ -19,6 +20,7 @@ from fixed_point_recoding import (
     evaluate,
     hex_buckets,
     hex_lookup,
+    hex_reduction_path,
     integer_buckets,
     integer_lookup,
     lift,
@@ -26,6 +28,7 @@ from fixed_point_recoding import (
     norm,
     recode_hex,
     recode_integer,
+    reduce_hex_buckets,
     residue,
 )
 
@@ -124,3 +127,34 @@ class FixedPointRecodingTests(unittest.TestCase):
                 actual = point_add(actual, act(bucket, act(unit, point)))
                 point = act(RADIX, point)
         self.assertEqual(actual, expected)
+
+    def test_c5_reduction_path_covers_each_bucket_with_five_steps(self):
+        path = hex_reduction_path()
+        self.assertEqual(path[0], ZERO)
+        self.assertEqual(len(path), len(set(path)))
+        self.assertEqual(set(path), set(hex_buckets()))
+        steps = Counter((b[0] - a[0], b[1] - a[1]) for a, b in pairwise(path))
+        self.assertEqual(steps, {
+            (1, 1): 1382, (-1, -1): 1348, (1, 0): 40, (0, -1): 28, (-1, -2): 3,
+        })
+        self.assertEqual(max(map(norm, steps)), 3)
+
+    def test_c5_suffix_reduction_matches_direct_weighted_group_sum(self):
+        path = hex_reduction_path()
+        occupied = {1, 18, 423, 1024, 1703, 2095, 2409, 2801}
+        occupied.update(
+            i for i, (a, b) in enumerate(pairwise(path), start=1)
+            if (b[0] - a[0], b[1] - a[1]) == (-1, -2)
+        )
+        buckets = {
+            path[i]: scalar_mul((-1 if i % 2 else 1) * (i % 31 + 1), GENERATOR)
+            for i in occupied
+        }
+        buckets[path[2]] = None
+        expected = None
+        for bucket, point in buckets.items():
+            expected = point_add(expected, scalar_mul(evaluate(bucket), point))
+        self.assertEqual(reduce_hex_buckets(buckets), expected)
+        self.assertIsNone(reduce_hex_buckets({}))
+        with self.assertRaises(ValueError):
+            reduce_hex_buckets({ZERO: GENERATOR})

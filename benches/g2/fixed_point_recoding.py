@@ -5,10 +5,14 @@ The six-unit Eisenstein construction follows Le and Sica, ePrint 2026/1902
 Theorem 1, with a directly enumerated hexagonal fundamental region.
 """
 
-from functools import cache
+from functools import cache, reduce
+from itertools import groupby, pairwise
 from math import isqrt
+from typing import Mapping
 
-from bn254_twist_frobenius import LAMBDA, R, U, nearest
+from bn254_twist_frobenius import (
+    LAMBDA, OMEGA, P, R, U, Point, nearest, point_add, point_neg,
+)
 
 Eisenstein = tuple[int, int]
 ZERO = (0, 0)
@@ -21,6 +25,7 @@ RADIX_NORM = 7**5
 HEX_WINDOWS = 19
 INT_RADIX = 2**11
 INT_WINDOWS = 24
+OMEGA_SQUARED = OMEGA**2 % P
 
 
 def valuation(value: int, prime: int) -> int:
@@ -146,3 +151,53 @@ def recode_hex(scalar: int) -> tuple[tuple[tuple[Eisenstein, Eisenstein], ...], 
         residual = a // RADIX_NORM, b // RADIX_NORM
         digits.append((bucket, unit))
     return tuple(digits), residual
+
+
+@cache
+def hex_reduction_path() -> tuple[Eisenstein, ...]:
+    """Traverse consecutive a-b rows, alternating the direction inside each."""
+    def row_index(z: Eisenstein) -> int:
+        return z[0] - z[1]
+
+    ordered = sorted(hex_buckets(), key=row_index)
+    path = []
+    for index, entries in groupby(ordered, key=row_index):
+        row = tuple(entries)
+        path.extend(row if index % 2 else reversed(row))
+    return tuple(path)
+
+
+def scale_point_x(point: Point, factor: int) -> Point:
+    if point is None:
+        return None
+    (x0, x1), y = point
+    return (x0 * factor % P, x1 * factor % P), y
+
+
+def reduce_hex_buckets(buckets: Mapping[Eisenstein, Point]) -> Point:
+    """Compute sum [b]S[b] via the deterministic c=5 path on subgroup points."""
+    path = hex_reduction_path()
+    if not buckets.keys() <= set(path[1:]):
+        raise ValueError("unexpected nonzero Eisenstein bucket")
+    suffix = None
+    differences = {}
+    for previous, bucket in reversed(tuple(pairwise(path))):
+        suffix = point_add(suffix, buckets.get(bucket))
+        step = bucket[0] - previous[0], bucket[1] - previous[1]
+        differences[step] = point_add(differences.get(step), suffix)
+
+    # Fuse the opposite steps ±omega². The only nonunit step is omega² - omega.
+    opposite = point_add(differences[(-1, -1)], point_neg(differences[(1, 1)]))
+    nonunit = differences[(-1, -2)]
+    weighted_nonunit = point_add(
+        scale_point_x(nonunit, OMEGA_SQUARED), point_neg(scale_point_x(nonunit, OMEGA)),
+    )
+    return reduce(
+        point_add,
+        (
+            differences[(1, 0)],
+            point_neg(scale_point_x(differences[(0, -1)], OMEGA)),
+            scale_point_x(opposite, OMEGA_SQUARED),
+            weighted_nonunit,
+        ),
+    )
