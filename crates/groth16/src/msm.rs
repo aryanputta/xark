@@ -104,6 +104,17 @@ pub static BATCH_AFFINE: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 /// `examples/bench_msm.rs` can compare.
 pub static GLV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+#[cfg(feature = "msm-g1-window-bench")]
+static G1_WINDOW_DELTA: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(0);
+
+/// Adjust only G1's model-selected window for a controlled benchmark process.
+#[cfg(feature = "msm-g1-window-bench")]
+#[doc(hidden)]
+pub fn set_bench_g1_window_delta(delta: i8) {
+    assert!((-1..=1).contains(&delta));
+    G1_WINDOW_DELTA.store(delta, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Additions per shared inversion.
 const BATCH: usize = 512;
 
@@ -562,6 +573,13 @@ fn pippenger_core<G: SwCurve>(
     }
     // ≤ 15-bit windows so every signed digit (|d| ≤ 2^(c−1)) fits an i16.
     let c = window_bits(n, bits, G::BaseField::extension_degree());
+    #[cfg(feature = "msm-g1-window-bench")]
+    let c = if G::BaseField::extension_degree() == 1 {
+        let delta = G1_WINDOW_DELTA.load(std::sync::atomic::Ordering::Relaxed);
+        (c as i8 + delta).clamp(2, 15) as usize
+    } else {
+        c
+    };
     let windows = (bits + 1).div_ceil(c);
     let threads = rayon::current_num_threads().max(1);
     // Split points so `windows × parts` covers the pool ~2× over, but keep slices
@@ -788,6 +806,44 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
 mod tests {
     use super::*;
     use ark_ff::Zero;
+
+    #[cfg(feature = "msm-g1-window-bench")]
+    #[test]
+    fn g1_window_offsets_match_arkworks_on_real_scalar_classes() {
+        use ark_bn254::{G1Affine, G1Projective};
+        use ark_ec::{PrimeGroup, VariableBaseMSM};
+        use ark_ff::{PrimeField, UniformRand};
+
+        let mut rng = rand::thread_rng();
+        let generator = G1Projective::generator();
+        let mut point = generator;
+        let mut bases = Vec::new();
+        let mut scalars = Vec::new();
+        for index in 0..521 {
+            bases.push(if index % 17 == 0 {
+                G1Affine::default()
+            } else {
+                point.into_affine()
+            });
+            point += generator;
+            let scalar = match index % 7 {
+                0 => Fr::zero(),
+                1 => Fr::from(1u64),
+                2 => Fr::from(2u64),
+                3 => Fr::from(u64::MAX),
+                4 => -Fr::from(1u64),
+                _ => Fr::rand(&mut rng),
+            };
+            scalars.push(scalar.into_bigint());
+        }
+        let expected = G1Projective::msm_bigint(&bases, &scalars);
+        for delta in [-1, 0, 1] {
+            set_bench_g1_window_delta(delta);
+            let actual = msm::<G1Projective>(&bases, &scalars);
+            assert!(same_point(&actual, &expected), "delta={delta}");
+        }
+        set_bench_g1_window_delta(0);
+    }
 
     #[cfg(feature = "msm-g2-endpoint-bench")]
     #[test]

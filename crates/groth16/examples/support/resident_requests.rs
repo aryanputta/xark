@@ -58,6 +58,15 @@ pub(super) fn run(args: &[String]) {
     };
     assert!(!tracking(), "use BENCH_TIME=1 for request timing");
     let profile = std::env::var_os("BENCH_REQUEST_PROFILE").is_some();
+    #[cfg(feature = "msm-g1-window-bench")]
+    {
+        let delta: i8 = std::env::var("BENCH_G1_WINDOW_DELTA")
+            .unwrap_or_else(|_| "0".to_string())
+            .parse()
+            .expect("BENCH_G1_WINDOW_DELTA must be -1, 0 or 1");
+        xark_groth16::msm::set_bench_g1_window_delta(delta);
+        eprintln!("bench G1 window delta: {delta}");
+    }
     let use_gls = match mode.as_str() {
         "cpu" => false,
         "gls" => true,
