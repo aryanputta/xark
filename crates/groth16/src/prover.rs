@@ -661,19 +661,21 @@ where
         let cached_gls_g2 = probe.cached_gls_g2();
         #[cfg(feature = "msm-b-shared-bench")]
         let shared_b_scalars = (probe.share_b_scalars() && !r.is_zero()).then(|| {
-            use rayon::prelude::*;
-            let count = key.b_g1_query.len();
-            assert_eq!(count, key.b_g2_query.len(), "B query length mismatch");
-            assert!(chunk >= count, "shared B scalars require unchunked queries");
-            let mut scalars = zeroize::Zeroizing::new(vec![Scalar::default(); count]);
-            scalars
-                .par_iter_mut()
-                .with_min_len(1 << 12)
-                .zip(&z[..count])
-                .for_each(|(slot, witness)| {
-                    *slot = witness.into_bigint();
-                });
-            scalars
+            time_resident(timings, "prepare_b_scalars", || {
+                use rayon::prelude::*;
+                let count = key.b_g1_query.len();
+                assert_eq!(count, key.b_g2_query.len(), "B query length mismatch");
+                assert!(chunk >= count, "shared B scalars require unchunked queries");
+                let mut scalars = zeroize::Zeroizing::new(vec![Scalar::default(); count]);
+                scalars
+                    .par_iter_mut()
+                    .with_min_len(1 << 12)
+                    .zip(&z[..count])
+                    .for_each(|(slot, witness)| {
+                        *slot = witness.into_bigint();
+                    });
+                scalars
+            })
         });
         #[cfg(feature = "msm-b-shared-bench")]
         let b_scalars = shared_b_scalars.as_ref().map(|scalars| scalars.as_slice());
@@ -753,7 +755,9 @@ where
             sc.spawn(|_| fixed_terms = Some(fixed()));
         });
         #[cfg(feature = "msm-b-shared-bench")]
-        drop(shared_b_scalars);
+        if let Some(scalars) = shared_b_scalars {
+            time_resident(timings, "clear_b_scalars", || drop(scalars));
+        }
         probe.mark("msm+qap_h");
         let h = h.expect("the scope joined the quotient")?;
         let some = |p: Option<G1Projective>| p.expect("the scope joined every MSM");

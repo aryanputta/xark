@@ -378,10 +378,18 @@ fn split_resident_timing_keeps_the_proof_and_reports_tasks() {
 #[cfg(feature = "msm-b-shared-bench")]
 #[test]
 fn shared_b_scalars_match_split_cpu_across_distinct_requests() {
-    struct Shared;
-    impl xark_groth16::Probe for Shared {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    use xark_groth16::prover::ResidentTimingSink;
+
+    struct Shared<'a>(&'a ResidentTimingSink<'a>);
+    impl xark_groth16::Probe for Shared<'_> {
         fn share_b_scalars(&self) -> bool {
             true
+        }
+
+        fn resident_timings(&self) -> Option<&ResidentTimingSink<'_>> {
+            Some(self.0)
         }
     }
 
@@ -433,6 +441,10 @@ fn shared_b_scalars_match_split_cpu_across_distinct_requests() {
             &mut (),
         )
         .unwrap();
+        let events = Mutex::new(Vec::new());
+        let record = |phase: &'static str, _: Instant, _: Duration| {
+            events.lock().unwrap().push(phase);
+        };
         let proof = xark_groth16::prove_with_randomness(
             &src,
             &z,
@@ -440,9 +452,17 @@ fn shared_b_scalars_match_split_cpu_across_distinct_requests() {
             r,
             s,
             &config,
-            &mut Shared,
+            &mut Shared(&record),
         )
         .unwrap();
+        let events = events.into_inner().unwrap();
+        if r.is_zero() {
+            assert!(!events.contains(&"prepare_b_scalars"));
+            assert!(!events.contains(&"clear_b_scalars"));
+        } else {
+            assert_eq!(events.first(), Some(&"prepare_b_scalars"));
+            assert_eq!(events.last(), Some(&"clear_b_scalars"));
+        }
         assert_eq!(proof, expected);
         for proof in [&expected, &proof] {
             assert!(ArkG16::verify(&vk, &[Fr::from(42u64)], proof).unwrap());
