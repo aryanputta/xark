@@ -57,6 +57,7 @@ pub(super) fn run(args: &[String]) {
         panic!("usage: warm-requests XBC KEY cpu|gls CONCURRENCY REQUESTS FIXTURE...");
     };
     assert!(!tracking(), "use BENCH_TIME=1 for request timing");
+    let profile = std::env::var_os("BENCH_REQUEST_PROFILE").is_some();
     let use_gls = match mode.as_str() {
         "cpu" => false,
         "gls" => true,
@@ -144,9 +145,10 @@ pub(super) fn run(args: &[String]) {
             "request witness is unsatisfied"
         );
         let cpu = Cpu::new(xark_groth16::InMemoryPk::new(&key), cfg.clone());
+        let mut profiles = Vec::new();
         let mut prover = ProfiledCpu {
             cpu,
-            profiles: None,
+            profiles: profile.then_some(&mut profiles),
             shifted: None,
             cached_gls: cached_msm
                 .as_ref()
@@ -156,8 +158,9 @@ pub(super) fn run(args: &[String]) {
         };
         let proof = prove_with_rng(&mut prover, &source, &witness, &mut rand::thread_rng())
             .expect("generate request proof");
+        drop(prover);
         drop(witness);
-        (proof, began.elapsed(), solve_elapsed)
+        (proof, began.elapsed(), solve_elapsed, profiles)
     };
 
     let verify = |index: usize, proof: &xark_groth16::Proof<Bn254>| {
@@ -188,7 +191,7 @@ pub(super) fn run(args: &[String]) {
         let last = first.saturating_add(concurrency).min(requests);
         let proofs: Vec<_> = (first..last).into_par_iter().map(prove).collect();
         let elapsed = start.elapsed();
-        for (index, (proof, _, _)) in (first..last).zip(&proofs) {
+        for (index, (proof, _, _, _)) in (first..last).zip(&proofs) {
             verify(index, proof);
         }
         println!(
@@ -196,7 +199,7 @@ pub(super) fn run(args: &[String]) {
             last - first,
             elapsed.as_nanos()
         );
-        for (index, (_, elapsed, solve_elapsed)) in (first..last).zip(&proofs) {
+        for (index, (_, elapsed, solve_elapsed, spans)) in (first..last).zip(&proofs) {
             println!(
                 "request verified index={index} fixture={} service_ns={}",
                 index % fixtures.len(),
@@ -206,6 +209,17 @@ pub(super) fn run(args: &[String]) {
                 "request solver index={index} solve_ns={}",
                 solve_elapsed.as_nanos()
             );
+            if profile {
+                assert_eq!(spans.len(), 1, "expected one profiled proof per request");
+                for span in &spans[0] {
+                    eprintln!(
+                        "request task index={index} phase={} offset_ns={} elapsed_ns={}",
+                        span.phase,
+                        span.offset.as_nanos(),
+                        span.elapsed.as_nanos()
+                    );
+                }
+            }
         }
     }
     eprintln!("prepared stream solver: {}", u8::from(prepare_solver));
