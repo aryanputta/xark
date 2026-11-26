@@ -11,6 +11,11 @@ use ark_ff::{BigInteger, PrimeField};
 use xark_groth16::msm::{self, Scalar, SwCurve};
 use xark_groth16::{BytecodeSource, ConstraintSource, ProvingKey};
 
+#[path = "cached_gls_b2.rs"]
+mod cached_gls_b2;
+
+pub(super) use cached_gls_b2::run as run_cached_gls_b2;
+
 const MAGIC: &[u8; 8] = b"XKQMSM01";
 
 #[path = "shifted_b2.rs"]

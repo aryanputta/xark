@@ -12,6 +12,7 @@
 //! BENCH_TIME=1 bench_prove query-msm <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-xark <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-b2-shifted <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
+//! BENCH_TIME=1 bench_prove query-msm-b2-cached-gls <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! bench_prove query-msm-export <circuit.xbc> <reduced pk.bin> <statement-dir> <new-output-file>
 //! ```
 //! `--reduced` / `--source xbc` prove the template-reduced circuit (key from
@@ -40,6 +41,9 @@
 //! outputs against Arkworks. The 3 MiB table cap covers its retained affine
 //! payload. Warm timings include scalar splitting and allocation. The ordinary
 //! B2 baseline already uses a GLV split for eligible full-width scalars.
+//! `query-msm-b2-cached-gls` caches four public G2 images per B2 base and
+//! measures exact scalar recoding separately. The same-process ordinary Xark
+//! baseline and cached arm are independently checked against Arkworks.
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
 //! Arkworks reference sums for a same-input benchmark. Use reproducible test
 //! fixtures and keep the witness-bearing export in local scratch storage.
@@ -336,6 +340,10 @@ fn main() {
         }
         "query-msm-b2-shifted" => {
             query_msm::shifted_b2::run(&args[2..]);
+            return;
+        }
+        "query-msm-b2-cached-gls" => {
+            query_msm::run_cached_gls_b2(&args[2..]);
             return;
         }
         "query-msm-export" => {
