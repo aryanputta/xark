@@ -13,6 +13,7 @@
 //! BENCH_TIME=1 bench_prove query-msm-xark <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-b2-shifted <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-b2-cached-gls <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
+//! BENCH_TIME=1 bench_prove query-msm-b2-cached-gls-reciprocal <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! bench_prove query-msm-export <circuit.xbc> <reduced pk.bin> <statement-dir> <new-output-file>
 //! ```
 //! `--reduced` / `--source xbc` prove the template-reduced circuit (key from
@@ -43,7 +44,9 @@
 //! B2 baseline already uses a GLV split for eligible full-width scalars.
 //! `query-msm-b2-cached-gls` caches four public G2 images per B2 base and
 //! measures exact scalar recoding separately. The same-process ordinary Xark
-//! baseline and cached arm are independently checked against Arkworks.
+//! baseline and cached arm are independently checked against Arkworks. The
+//! reciprocal mode replaces BigInt recoding and checks the ordered recoded
+//! fixture against exact division before timing.
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
 //! Arkworks reference sums for a same-input benchmark. Use reproducible test
 //! fixtures and keep the witness-bearing export in local scratch storage.
@@ -343,7 +346,11 @@ fn main() {
             return;
         }
         "query-msm-b2-cached-gls" => {
-            query_msm::run_cached_gls_b2(&args[2..]);
+            query_msm::run_cached_gls_b2::<false>(&args[2..]);
+            return;
+        }
+        "query-msm-b2-cached-gls-reciprocal" => {
+            query_msm::run_cached_gls_b2::<true>(&args[2..]);
             return;
         }
         "query-msm-export" => {

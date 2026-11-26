@@ -31,6 +31,46 @@ const COFACTORS: [&str; IMAGES] = [
     "734653495049373973806201247608587340314828430225682852893",
 ];
 
+// Exact fixed-limb rounding parameters from 39896f2.
+const RECIPROCALS: [[u64; 7]; IMAGES] = [
+    [
+        0x7f9c553cc028af1,
+        0xdf7a82efc16af4a4,
+        0x500bb9ebe34b87b5,
+        0x7d1fff2e5ce18e26,
+        0x46f4bda995d51bb1,
+        0x8e5da66fc7184ae,
+        0x9e80318ab0d92b93,
+    ],
+    [
+        0x139c9c6a3f3db20a,
+        0xe7358073326c5b71,
+        0xc638c5d5d685c43e,
+        0x353ccca0e558c73b,
+        0x2dff291532e42728,
+        0x55b4ca7ba3e5577f,
+        0x9e80318ab0d92b95,
+    ],
+    [
+        0x96ce4aece61f0339,
+        0x2e3ff027efccd68a,
+        0x8fa7d32d2fafba64,
+        0x6eb9c714773a6ef2,
+        0xd91d232ec7e0b3d7,
+        0x2,
+        0x0,
+    ],
+    [
+        0xd86d9429bd1d799a,
+        0x5a39b15f89c9f59e,
+        0xd69f2f027ee767b0,
+        0x23038c29bb8bb4ff,
+        0xc170977dcef3cd3f,
+        0x55b4ca7ba3e5577d,
+        0x9e80318ab0d92b95,
+    ],
+];
+
 struct Recoder {
     modulus: BigInt,
     half_modulus: BigInt,
@@ -62,7 +102,7 @@ impl Recoder {
         parts
     }
 
-    fn encode(&self, scalar: &Scalar) -> [Scalar; IMAGES] {
+    fn encode<const FIXED: bool>(&self, scalar: &Scalar) -> [Scalar; IMAGES] {
         if !requires_split(scalar) {
             return [
                 *scalar,
@@ -71,20 +111,66 @@ impl Recoder {
                 Scalar::default(),
             ];
         }
+        if FIXED {
+            return decompose_fixed(scalar.0).map(|part| {
+                let magnitude = u64::try_from(part.unsigned_abs()).expect("bounded GLS component");
+                encode_signed(magnitude, part < 0)
+            });
+        }
         self.decompose(scalar).map(|part| {
             let mut limbs = part.iter_u64_digits();
-            let magnitude = ArkBigInt([limbs.next().unwrap_or(0), 0, 0, 0]);
+            let magnitude = limbs.next().unwrap_or(0);
             assert!(limbs.next().is_none(), "GLS split exceeded u64 magnitude");
-            if part.sign() == Sign::Minus {
-                // Give Xark's existing signed magnitude classes canonical r-k.
-                let mut encoded = Fr::MODULUS;
-                encoded.sub_with_borrow(&magnitude);
-                encoded
-            } else {
-                magnitude
-            }
+            encode_signed(magnitude, part.sign() == Sign::Minus)
         })
     }
+}
+
+fn encode_signed(magnitude: u64, negative: bool) -> Scalar {
+    let magnitude = ArkBigInt([magnitude, 0, 0, 0]);
+    if negative {
+        // Give Xark's existing signed magnitude classes canonical r-k.
+        let mut encoded = Fr::MODULUS;
+        encoded.sub_with_borrow(&magnitude);
+        encoded
+    } else {
+        magnitude
+    }
+}
+
+// Each product column needs at most (2^64−1)^2 + 2(2^64−1) = 2^128−1.
+// The input is in [0,r), and each reciprocal is <2^448.
+fn round_reciprocal(scalar: [u64; 4], factor: [u64; 7]) -> [u64; 3] {
+    let mut product = [0u64; 11];
+    for (i, a) in scalar.into_iter().enumerate() {
+        let mut carry = 0;
+        for (j, b) in factor.into_iter().enumerate() {
+            let column = u128::from(a) * u128::from(b) + u128::from(product[i + j]) + carry;
+            product[i + j] = column as u64;
+            carry = column >> 64;
+        }
+        product[i + factor.len()] = carry as u64;
+    }
+    let (low, carry) = product[8].overflowing_add(product[7] >> 63);
+    let (mid, carry) = product[9].overflowing_add(u64::from(carry));
+    [low, mid, product[10] + u64::from(carry)]
+}
+
+// The exact centered residual fits in one signed i128. Its low 128 bits
+// uniquely encode it, so higher coordinate words are not needed here.
+fn decompose_fixed(scalar: [u64; 4]) -> [i128; IMAGES] {
+    fn low128(lo: u64, hi: u64) -> u128 {
+        u128::from(lo) | (u128::from(hi) << 64)
+    }
+    let coordinates = RECIPROCALS.map(|factor| round_reciprocal(scalar, factor));
+    let mut residual = [low128(scalar[0], scalar[1]), 0, 0, 0];
+    for (row, [lo, hi, _]) in BASIS.into_iter().zip(coordinates) {
+        let coefficient = low128(lo, hi);
+        for (out, entry) in residual.iter_mut().zip(row) {
+            *out = out.wrapping_sub(coefficient.wrapping_mul(entry as u128));
+        }
+    }
+    residual.map(|part| part as i128)
 }
 
 fn requires_split(scalar: &Scalar) -> bool {
@@ -138,7 +224,7 @@ impl CachedImages {
         })
     }
 
-    fn recode(&self, recoder: &Recoder, scalars: &[Scalar]) -> Vec<Scalar> {
+    fn recode<const FIXED: bool>(&self, recoder: &Recoder, scalars: &[Scalar]) -> Vec<Scalar> {
         assert_eq!(self.points.len() / IMAGES, scalars.len());
         let parts: Vec<_> = self
             .points
@@ -149,7 +235,7 @@ impl CachedImages {
                 if images[0].is_zero() {
                     [Scalar::default(); IMAGES]
                 } else {
-                    recoder.encode(scalar)
+                    recoder.encode::<FIXED>(scalar)
                 }
             })
             .collect();
@@ -163,18 +249,25 @@ struct CandidateTiming {
     msm: Duration,
 }
 
-pub(crate) fn run(args: &[String]) {
+pub(crate) fn run<const FIXED: bool>(args: &[String]) {
+    let mode = if FIXED {
+        "query-msm-b2-cached-gls-reciprocal"
+    } else {
+        "query-msm-b2-cached-gls"
+    };
     let [xbc_path, pk_path, directory, options @ ..] = args else {
         panic!(
-            "usage: bench_prove query-msm-b2-cached-gls <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]"
+            "usage: bench_prove {mode} <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]"
         );
     };
     let (samples, warmups) = super::counts(options).unwrap_or_else(|reason| panic!("{reason}"));
     assert!(!super::super::tracking(), "set BENCH_TIME=1 to time GLS");
-    let (pk, scalars) = super::load(xbc_path, pk_path, Path::new(directory));
+    let ((pk, scalars), fixture_load) =
+        super::timed(|| super::load(xbc_path, pk_path, Path::new(directory)));
     let bases = &pk.b_g2_query;
     // The normal trusted proving-key decoder deliberately skips this check.
-    if let Err(index) = check_subgroup(bases) {
+    let (subgroup, subgroup_check) = super::timed(|| check_subgroup(bases));
+    if let Err(index) = subgroup {
         panic!("B2 base {index} is outside the BN254 G2 subgroup");
     }
     let split_terms = bases
@@ -185,11 +278,17 @@ pub(crate) fn run(args: &[String]) {
     let (recoder, recoder_setup) = super::timed(Recoder::new);
     let (cache, prepare) =
         super::timed(|| CachedImages::new(bases).expect("prepare signed GLS bases"));
-    let expected = G2Projective::msm_bigint(bases, &scalars);
+    if FIXED {
+        assert!(
+            cache.recode::<false>(&recoder, &scalars) == cache.recode::<true>(&recoder, &scalars),
+            "fixed-width and division recodings differ on the fixture"
+        );
+    }
+    let (expected, oracle) = super::timed(|| G2Projective::msm_bigint(bases, &scalars));
     let baseline = || super::timed(|| msm::msm::<G2Projective>(bases, &scalars));
     let candidate = || {
         let start = Instant::now();
-        let (recoded, recode) = super::timed(|| cache.recode(&recoder, &scalars));
+        let (recoded, recode) = super::timed(|| cache.recode::<FIXED>(&recoder, &scalars));
         let (point, msm) = super::timed(|| msm::msm::<G2Projective>(&cache.points, &recoded));
         drop(recoded);
         let total = start.elapsed();
@@ -215,8 +314,9 @@ pub(crate) fn run(args: &[String]) {
             timings.push((baseline_first, baseline_time, gls_time));
         }
     }
+    let rounding = if FIXED { "fixed-limb" } else { "division" };
     println!(
-        "query msm B2 cached GLS verified: terms={} threads={} samples={samples} warmups={warmups} subgroup_points={} split_terms={split_terms} xark_glv={} xark_batch_affine={} table_payload_bytes={} table_cap_bytes={TABLE_CAP_BYTES} scalar_scratch_bytes={} recoder_setup_ns={} prepare_ns={}",
+        "query msm B2 cached GLS verified: terms={} threads={} samples={samples} warmups={warmups} subgroup_points={} split_terms={split_terms} xark_glv={} xark_batch_affine={} table_payload_bytes={} table_cap_bytes={TABLE_CAP_BYTES} scalar_scratch_bytes={} recoder_setup_ns={} prepare_ns={} rounding={rounding} fixture_load_ns={} subgroup_check_ns={} oracle_ns={}",
         bases.len(),
         rayon::current_num_threads(),
         bases.len(),
@@ -226,6 +326,9 @@ pub(crate) fn run(args: &[String]) {
         cache.points.len() * size_of::<Scalar>(),
         recoder_setup.as_nanos(),
         prepare.as_nanos(),
+        fixture_load.as_nanos(),
+        subgroup_check.as_nanos(),
+        oracle.as_nanos(),
     );
     for (index, (baseline_first, baseline, candidate)) in timings.into_iter().enumerate() {
         let first = if baseline_first {
@@ -286,7 +389,12 @@ mod tests {
             .into_iter()
             .chain((0..1024).map(|_| Fr::rand(&mut rng).into_bigint()))
         {
-            let split = r.encode(&scalar);
+            let split = r.encode::<false>(&scalar);
+            assert_eq!(split, r.encode::<true>(&scalar));
+            assert_eq!(
+                r.decompose(&scalar),
+                decompose_fixed(scalar.0).map(BigInt::from)
+            );
             let recombined: Fr = split
                 .into_iter()
                 .enumerate()
@@ -304,7 +412,7 @@ mod tests {
         negative.sub_with_borrow(&short);
         for coefficient in [Scalar::default(), short, negative] {
             assert_eq!(
-                r.encode(&coefficient),
+                r.encode::<true>(&coefficient),
                 [
                     coefficient,
                     Scalar::default(),
@@ -340,7 +448,7 @@ mod tests {
             .map(|_| Fr::rand(&mut rng).into_bigint())
             .collect();
         let cache = CachedImages::new(&bases).unwrap();
-        let encoded = cache.recode(&Recoder::new(), &scalars);
+        let encoded = cache.recode::<true>(&Recoder::new(), &scalars);
         let expected = G2Projective::msm_bigint(&bases, &scalars);
         assert_eq!(msm::msm::<G2Projective>(&cache.points, &encoded), expected);
     }
