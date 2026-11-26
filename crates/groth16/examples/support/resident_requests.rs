@@ -58,6 +58,15 @@ pub(super) fn run(args: &[String]) {
     };
     assert!(!tracking(), "use BENCH_TIME=1 for request timing");
     let profile = std::env::var_os("BENCH_REQUEST_PROFILE").is_some();
+    #[cfg(feature = "msm-g1-batch-bench")]
+    {
+        let limit: usize = std::env::var("BENCH_G1_BATCH")
+            .unwrap_or_else(|_| "512".to_string())
+            .parse()
+            .expect("BENCH_G1_BATCH must be a power of two from 64 to 1024");
+        xark_groth16::msm::set_bench_g1_batch_size(limit);
+        eprintln!("bench G1 affine batch limit: {limit}");
+    }
     let use_gls = match mode.as_str() {
         "cpu" => false,
         "gls" => true,

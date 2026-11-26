@@ -107,6 +107,17 @@ pub static GLV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// Additions per shared inversion.
 const BATCH: usize = 512;
 
+#[cfg(feature = "msm-g1-batch-bench")]
+static G1_BATCH_SIZE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(BATCH);
+
+/// Select a G1-only affine flush limit for controlled benchmark processes.
+#[cfg(feature = "msm-g1-batch-bench")]
+#[doc(hidden)]
+pub fn set_bench_g1_batch_size(limit: usize) {
+    assert!(limit.is_power_of_two() && (64..=1024).contains(&limit));
+    G1_BATCH_SIZE.store(limit, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[cfg(feature = "msm-g2-endpoint-bench")]
 static G2_TRIM_INVERSE_ENDPOINTS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -136,6 +147,7 @@ pub fn set_bench_g2_sparse_endomorphism(enabled: bool) {
 /// if the queue stays full (skewed digits: a few hot buckets) does what is left
 /// go to XYZZ side buckets, allocated then, so batches never stall.
 struct AffineBuckets<G: SwCurve> {
+    batch_limit: usize,
     x: Vec<G::BaseField>,
     y: Vec<G::BaseField>,
     used: Vec<bool>,
@@ -154,17 +166,31 @@ struct AffineBuckets<G: SwCurve> {
 
 impl<G: SwCurve> AffineBuckets<G> {
     fn new(nb: usize) -> Self {
+        #[cfg(feature = "msm-g1-batch-bench")]
+        let limit = if G::BaseField::extension_degree() == 1 {
+            G1_BATCH_SIZE.load(std::sync::atomic::Ordering::Relaxed)
+        } else {
+            BATCH
+        };
+        #[cfg(not(feature = "msm-g1-batch-bench"))]
+        let limit = BATCH;
+        Self::new_with_limit(nb, limit)
+    }
+
+    fn new_with_limit(nb: usize, limit: usize) -> Self {
+        assert!(limit > 0);
         AffineBuckets {
+            batch_limit: limit,
             x: vec![G::BaseField::zero(); nb],
             y: vec![G::BaseField::zero(); nb],
             used: vec![false; nb],
             stamp: vec![0; nb],
             epoch: 1,
-            batch: Vec::with_capacity(BATCH),
-            queue: Vec::with_capacity(BATCH),
+            batch: Vec::with_capacity(limit),
+            queue: Vec::with_capacity(limit),
             side: Vec::new(),
-            den: Vec::with_capacity(BATCH),
-            pre: Vec::with_capacity(BATCH),
+            den: Vec::with_capacity(limit),
+            pre: Vec::with_capacity(limit),
             #[cfg(feature = "msm-g2-endpoint-bench")]
             trim_inverse_endpoints: G::BaseField::extension_degree() == 2
                 && G2_TRIM_INVERSE_ENDPOINTS.load(std::sync::atomic::Ordering::Relaxed),
@@ -185,7 +211,7 @@ impl<G: SwCurve> AffineBuckets<G> {
         } else {
             self.stamp[bi] = self.epoch;
             self.batch.push((b, px, py));
-            if self.batch.len() == BATCH {
+            if self.batch.len() == self.batch_limit {
                 self.flush();
             }
         }
@@ -197,10 +223,10 @@ impl<G: SwCurve> AffineBuckets<G> {
         let epoch = self.epoch;
         if !self.place(b, px, py) {
             self.queue.push((b, px, py));
-            if self.queue.len() == BATCH {
+            if self.queue.len() == self.batch_limit {
                 self.flush();
                 self.drain();
-                if self.queue.len() > BATCH / 2 {
+                if self.queue.len() > self.batch_limit / 2 {
                     self.spill();
                 }
             }
@@ -788,6 +814,46 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
 mod tests {
     use super::*;
     use ark_ff::Zero;
+
+    #[cfg(feature = "msm-g1-batch-bench")]
+    #[test]
+    fn g1_affine_batch_limits_match_projective_addition() {
+        use ark_bn254::{G1Affine, G1Projective};
+        use ark_ec::AffineRepr;
+
+        let p = G1Affine::generator();
+        let q = (p.into_group() + p).into_affine();
+        for limit in [64, 128, 256, 512, 1024] {
+            let mut additions = Vec::new();
+            for bucket in 0..130u32 {
+                additions.push((bucket, p));
+            }
+            for bucket in 0..130u32 {
+                additions.push((bucket, if bucket % 3 == 0 { -p } else { q }));
+            }
+            additions.extend(std::iter::repeat_n((0, p), 2 * limit + 1));
+            let mut expected = vec![G1Projective::zero(); 130];
+            let mut buckets = AffineBuckets::<G1Projective>::new_with_limit(130, limit);
+            for &(bucket, point) in &additions {
+                expected[bucket as usize] += point;
+                let (x, y) = point.xy().unwrap();
+                buckets.add(bucket, x, y);
+            }
+            let (xs, ys, used, side) = buckets.finish();
+            for (bucket, expected) in expected.iter().enumerate() {
+                let mut actual: G1Projective = side
+                    .get(bucket)
+                    .map_or(G1Projective::zero(), |p| (*p).into());
+                if used[bucket] {
+                    actual += G1Projective::from_xy(xs[bucket], ys[bucket]);
+                }
+                assert!(
+                    same_point(&actual, expected),
+                    "limit={limit}, bucket={bucket}"
+                );
+            }
+        }
+    }
 
     #[cfg(feature = "msm-g2-endpoint-bench")]
     #[test]
