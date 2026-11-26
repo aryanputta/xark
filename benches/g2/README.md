@@ -2,6 +2,8 @@
 
 The research branch starts from Xark 0.5 commit `03a7f519d28df6718f7ce6dda41f1e57e5ea55db`. Candidate binaries can use the published sprint benchmark companion at `dc8ad92`, which exports ordered B1/B2 data and independently checks complete proofs. The performance target is a reproducible B2 improvement of 20–40% and at least 10% end-to-end on the selected Privacy Rings workload.
 
+Upstream already includes GLV, tuned batch-affine windows, queued affine conflicts and parallel resident MSM and quotient work. The comparison in PR #91 covered PR #84's circuits. The paired results below use the separate Privacy Rings fixtures and their stated checking boundary. PR #47 covers GPU backends. PRs #97–#103 cover key validation, test staging, cache safety, witness-row evaluation, OpenCL test setup and x86 build documentation. The candidate work here targets the native G2 kernel. [Existing prover optimization](https://github.com/blueshift-gg/xark/commit/0822bfb) · [GPU PR](https://github.com/blueshift-gg/xark/pull/47)
+
 ## Reconstruct the evidence
 
 ```sh
@@ -38,7 +40,7 @@ python3 benches/g2/profile.py "$HOME/Downloads/aaa-xark-linux-withdrawal-profile
 | Disabling batch affine | Checked proving p50 grew 25–29%. | Keep batch affine. Target the work inside flush rather than turning it off. |
 | Raising the MSM merge cutoff | Withdrawal p50 gained 2.9–7.3%, with 15–16% higher sampled peak RSS. Escrow reversed with order. | Keep the split default. |
 | Moving B2 earlier | Earlier completion shifted the longest task, while a withdrawal run regressed p50 by 20%. | Retain existing scheduling. |
-| Two independent G2 denominator chains | An opt-in candidate splits the forward and reverse product chains and computes both lane inverses from one shared Fq2 inversion. It adds three products per multi-entry batch. | Screen correctness and throughput under a held-fixed window policy before considering integration. |
+| Two independent G2 denominator chains | The opt-in candidate splits the forward and reverse product chains and computes both lane inverses from one shared Fq2 inversion. It adds three products per multi-entry batch. Debug tests matched eight real B1/B2 outputs against Arkworks. Both verifiers accepted four complete proofs and rejected four altered statements. | Proceed to the release benchmark with fixed window policy. [Candidate branch](https://github.com/aryanputta/xark/tree/perf/privacy-rings-g2-inverse-lanes) |
 | Immutable G2 endomorphism coordinates | An opt-in candidate reuses only the transformed x-coordinate of each proving-key base. It estimates roughly 476 KiB for escrow and 338 KiB for withdrawal. | Measure query-level latency and cold preparation cost first. |
 
 The archived witness statement and circuit manifests anchor all prover-only comparisons. The new candidates are isolated. User-derived scalars and buckets stay request-local. Benchmark receipts and vectors never belong in production logs. Production proving keeps fresh cryptographic randomness. Neither passing proofs nor equivalent group outputs establish constant-time behavior. Existing scalar-dependent work needs separate side-channel review for co-tenant deployments.
