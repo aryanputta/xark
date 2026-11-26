@@ -1,5 +1,7 @@
 # Privacy Rings resident proof scaling
 
+See the [CPU proof receipts](RESULTS.md) for measured results, sample data, and fixture hashes.
+
 Run the same escrow and withdrawal inputs with one Rayon worker, two Rayon workers in one process, and two concurrent processes with one worker each. Each process loads its key and witness once. The runner fixes CPU-only split MSMs and compiled witness row checks. The example verifies every measured proof with Xark and Arkworks and checks one changed public statement per process.
 
 Build the release example on Linux or macOS and run the benchmark with Python 3.11 or newer.
