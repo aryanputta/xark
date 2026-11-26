@@ -34,7 +34,7 @@ gcc --version > "$OUT/gcc.log"
   --passC:-falign-functions=64 --passC:-fmerge-all-constants \
   --nimcache:"$OUT/nimcache" -o:"$OUT/constantine-b1" "$ADAPTER/query_b1.nim" \
   > "$OUT/build.log" 2>&1
-sha256sum "$ADAPTER/query_b1.nim" "$ADAPTER/check_rejection.py" \
+sha256sum "$ADAPTER/query_b1.nim" "$ADAPTER/query_bundle.nim" "$ADAPTER/check_rejection.py" \
   "$OUT/constantine-b1" > "$OUT/adapter.sha256"
 ```
 
@@ -114,3 +114,33 @@ threads. Input parsing, canonical-to-Montgomery coordinate conversion,
 result normalization and Arkworks equality checks are outside the timer.
 Report descriptive per-process B1 medians by fixture and order with host
 and toolchain receipts. Xark B2 rows are excluded from this comparison.
+
+## B2 MSM rehearsal
+
+The B2 adapter reads the same bundle, checks G2 curve membership, and compares
+every result with the Arkworks reference before emitting samples. Bundle
+provenance supplies subgroup assurance. Use only digest-verified test inputs,
+including a synthetic vector from `bench_prove query-msm-synthetic`, and keep
+synthetic kernel results separate from the Privacy Rings cohorts.
+
+Use the same pinned Constantine, Nim, and GCC settings as above. Set
+`VECTOR` and `VECTOR_SHA256` to a previously verified bundle and digest.
+
+```bash
+"$NIM" c --path:"$CT" --cc:gcc --tlsEmulation=off -d:danger --panics:on \
+  -d:noSignalHandler --mm:arc -d:useMalloc --passC:-fno-semantic-interposition \
+  --passC:-falign-functions=64 --passC:-fmerge-all-constants \
+  --nimcache:"$OUT/nimcache-b2" -o:"$OUT/constantine-b2" "$ADAPTER/query_b2.nim" \
+  > "$OUT/build-b2.log" 2>&1
+printf '%s  %s\n' "$VECTOR_SHA256" "$VECTOR" | sha256sum -c -
+python3 "$ADAPTER/check_rejection.py" "$OUT/constantine-b2" "$VECTOR" b2 \
+  > "$OUT/b2-controls.log"
+"$OUT/constantine-b2" "$VECTOR" 2 2 1 > "$OUT/b2-smoke.log"
+test "$(grep -c '^query msm constantine: query=b2 ' "$OUT/b2-smoke.log")" -eq 2
+sha256sum "$ADAPTER/query_b2.nim" "$ADAPTER/query_bundle.nim" \
+  "$ADAPTER/check_rejection.py" "$OUT/constantine-b2" "$VECTOR" > "$OUT/b2.sha256"
+```
+
+For a full matched Privacy Rings comparison, use the same replay as B1 with
+`constantine-b2`, the `b2` rejection argument, and B2 timing rows. Hold the
+worker budget, CPU affinity, fixture hash and backend order policy fixed.
