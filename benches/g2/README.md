@@ -76,3 +76,9 @@ python3 benches/g2/tune.py --runner /path/to/competitive/run.py \
 ```
 
 The screen tests B2 first with reversed process order on the chosen workload. A candidate reaches full proofs only if both pairs clear the B2 median and tail gate. The proof screen measures the tuning workload and the other Privacy Rings workload, checks paired p50 and p95 plus sampled Linux RSS, and records every attempted stage and its exit status. Candidates that pass are ranked by their worst paired proof median ratio, then their worst B2 median ratio, then sampled memory. The other Privacy Rings circuit is a holdout for this screen. A separate application circuit is needed to validate generalization. Use `--smoke` only to exercise the pipeline. Cold proving, sustained throughput and independent hardware are further acceptance gates. The tool never changes a production default.
+
+## Verified release checkpoint
+
+The exact portable release binary of the inverse-chain candidate produced four checked withdrawal B2 samples and eight complete proofs across escrow and withdrawal in the automated smoke. The full proofs passed Xark and Arkworks and rejected the altered statements. Both focused boundary tests and strict feature-on Clippy passed. The separate fixed-base prototype verified six pairs of real B2 inputs and rejected both malformed controls before reporting timings. Its retained coordinate payload measured 486,784 bytes for escrow and 345,984 bytes for withdrawal. [Fixed-base candidate](https://github.com/aryanputta/xark/tree/perf/g2-b2-fixed-base) · [Inverse-chain hosted checks](https://github.com/aryanputta/xark/actions/runs/45762462934)
+
+Process monitoring was unavailable on the native workstation and the host showed competing load. The strict preflight refused to start measurements, and the smoke reported no performance winner. Keep both experiments separate from production until a pinned Linux replay provides eligible paired medians, tails, and memory results.
