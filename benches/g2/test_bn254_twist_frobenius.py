@@ -1,5 +1,6 @@
 """Check exact public BN254 Frobenius and decomposition identities."""
 
+from collections import Counter
 import random
 import unittest
 
@@ -7,21 +8,30 @@ from bn254_twist_frobenius import (
     BASIS,
     BOUNDS,
     GENERATOR,
+    GLS_BASIS,
+    GLS_BOUNDS,
+    GLS_COFACTORS,
+    GLS_POWERS,
     LAMBDA,
     P,
     PSI_X,
     PSI_Y,
     R,
+    SHIFT_128_MASKS,
+    SHIFT_128_PARTS,
     U,
     decompose,
+    decompose_gls,
     fq2_conj,
     fq2_mul,
     fq2_neg,
     fq2_pow,
+    gls_bases,
     on_twist,
     point_add,
     psi,
     scalar_mul,
+    shifted_point_gls,
 )
 
 
@@ -112,3 +122,57 @@ class BN254TwistFrobeniusTests(unittest.TestCase):
                         point_add(scalar_mul(a, point), scalar_mul(b, image)),
                         scalar_mul(scalar, point),
                     )
+
+    def test_gls_lattice_index_and_integer_bounds(self):
+        self.assertEqual(
+            tuple(power % R for power in GLS_POWERS),
+            tuple(pow(LAMBDA, i, R) for i in range(4)),
+        )
+        self.assertEqual((LAMBDA**4 - LAMBDA**2 + 1) % R, 0)
+        determinant = sum(row[0] * c for row, c in zip(GLS_BASIS, GLS_COFACTORS))
+        self.assertEqual(determinant, R)
+        self.assertEqual(
+            tuple(sum(x * p for x, p in zip(row, GLS_POWERS)) for row in GLS_BASIS),
+            (0, -2 * R, R, 2 * R),
+        )
+        self.assertEqual(tuple(bound.bit_length() for bound in GLS_BOUNDS), (64, 63, 64, 64))
+        rng = random.Random(25404)
+        edges = (0, 1, -1, R // 2, R - 1, R, R + 1, -R - 1, 2**256 - 1)
+        for scalar in (*edges, *(rng.randrange(R) for _ in range(4096))):
+            parts = decompose_gls(scalar)
+            for part, bound in zip(parts, GLS_BOUNDS):
+                self.assertLessEqual(abs(part), bound)
+            self.assertEqual(sum(k * e for k, e in zip(parts, GLS_POWERS)) % R, scalar % R)
+
+    def test_gls_images_and_recombination_against_group_oracle(self):
+        for multiple in (0, 1, -1, 7, 43):
+            point = scalar_mul(multiple, GENERATOR)
+            bases = gls_bases(point)
+            for i, image in enumerate(bases):
+                with self.subTest(multiple=multiple, image=i):
+                    self.assertTrue(on_twist(image))
+                    self.assertEqual(image, scalar_mul(pow(LAMBDA, i, R), point))
+                    if i:
+                        self.assertEqual(image, psi(bases[i - 1]))
+            for scalar in (0, 1, -1, R // 2, 2**253 + 54321, R - 1):
+                with self.subTest(multiple=multiple, scalar=scalar):
+                    recombined = None
+                    for part, image in zip(decompose_gls(scalar), bases):
+                        recombined = point_add(recombined, scalar_mul(part, image))
+                    self.assertEqual(recombined, scalar_mul(scalar, point))
+
+    def test_shifted_fixed_point_matches_independent_oracle(self):
+        self.assertEqual(
+            SHIFT_128_PARTS,
+            (
+                6994998879106512636,
+                -1489860392368150449,
+                1489860392368150451,
+                -1489860392368150451,
+            ),
+        )
+        self.assertEqual(Counter(SHIFT_128_MASKS), {0: 17, 1: 20, 12: 1, 14: 13, 15: 12})
+        self.assertEqual(len(SHIFT_128_MASKS) - 1, 62)
+        for multiple in (0, 1, -1, 7, 43):
+            point = scalar_mul(multiple, GENERATOR)
+            self.assertEqual(shifted_point_gls(point), scalar_mul(2**128, point))
