@@ -502,7 +502,7 @@ mod tests {
         let bases = vec![G2Affine::generator()];
         let other = bases.clone();
         let table = ResidentCachedGls::new(&bases).unwrap();
-        table.msm(&other, &[Scalar::default()]);
+        let _ = table.msm(&other, &[Scalar::default()]);
     }
 
     #[test]
