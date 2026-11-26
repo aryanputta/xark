@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Args;
@@ -148,8 +149,7 @@ pub fn run(args: ProveArgs) -> Result<()> {
     // it just replaces a "run build first" error with actually doing it.
     autobuild_and_setup(&args, &project, &pk_path)?;
 
-    // `PROVE_TIME=1` (a `debug` build) adds the constraint count and whether the
-    // rows came from the cache to the solve / prove times every proof reports.
+    // `PROVE_TIME=1` (the `debug` feature) adds phase timings and cache details.
     let timing = super::dbg_flag("PROVE_TIME");
     let xbc = project.proving_xbc();
     // Inputs come from `--inputs`: inline JSON or a file path (agnostic).
@@ -197,14 +197,23 @@ pub fn run(args: ProveArgs) -> Result<()> {
         timing,
         device,
     )?;
-    write_outputs(&args, &proof_out, &out_dir, proof, public, times)
+    let output_started = timing.then(Instant::now);
+    write_outputs(&args, &proof_out, &out_dir, proof, public, times)?;
+    if let Some(started) = output_started {
+        eprintln!("PROVE_TIME_PHASE: output={:?}", started.elapsed());
+    }
+    Ok(())
 }
 
 /// How long the two halves of a proof took: solving the witness (with the row
 /// source built beside it) and the Groth16 prove (key read, MSMs and, with `--verify`, the check).
 struct ProveTimes {
-    solve: std::time::Duration,
-    prove: std::time::Duration,
+    solve: Duration,
+    prove: Duration,
+}
+
+fn phase_elapsed(started: Option<Instant>) -> Duration {
+    started.map(|t| t.elapsed()).unwrap_or_default()
 }
 
 /// The prover RNG: OS randomness, or — test fixtures only — a fixed seed (refused
@@ -271,7 +280,7 @@ fn prove_streaming(
     Vec<ark_bn254::Fr>,
     ProveTimes,
 )> {
-    let t = std::time::Instant::now();
+    let t = Instant::now();
     let bytes = std::fs::read(xbc).with_context(|| format!("reading {}", xbc.display()))?;
     let fingerprint = super::sha256_hex(&bytes);
     // A key made for another circuit can't prove this one: say so, rather than
@@ -293,30 +302,34 @@ fn prove_streaming(
         ),
         super::KeyFit::Same => {}
     }
+    let artifact_check_elapsed = timing.then(|| t.elapsed());
     // The row source and the witness don't depend on each other: build the source
     // while another thread solves. Its error, if both fail, is reported first, as
     // when they ran one after the other.
-    let (built, solved) = std::thread::scope(|s| {
+    let (built, row_source_elapsed, solved) = std::thread::scope(|s| {
         let solved = s.spawn(|| {
+            let started = timing.then(Instant::now);
             let vars = xark_ir::function_decode::decode_input_vars(&bytes)
                 .map_err(|e| anyhow::anyhow!(e))?;
             let id_inputs = resolve_input_ids(&vars, inputs)?;
             drop(vars);
             let assign = stream_witness(&bytes, sources, &id_inputs)?;
-            anyhow::Ok((assign, id_inputs))
+            anyhow::Ok((assign, id_inputs, phase_elapsed(started)))
         });
+        let started = timing.then(Instant::now);
         let digest = super::recorded_digest(pk_path, &fingerprint);
         let built = row_source(args, &bytes, &fingerprint, digest.as_deref(), kind);
+        let row_source_elapsed = phase_elapsed(started);
         if let (Ok((src, _)), Some(device)) = (&built, device.as_mut()) {
             device.hint((src.num_constraints() + src.layout().num_instance()).next_power_of_two());
         }
         let solved = solved
             .join()
             .unwrap_or_else(|e| std::panic::resume_unwind(e));
-        (built, solved)
+        (built, row_source_elapsed, solved)
     });
     let (src, cached) = built?;
-    let (assign_fp, id_inputs) = solved?;
+    let (assign_fp, id_inputs, witness_solve_elapsed) = solved?;
     let t_solve = t.elapsed();
     let z = src.layout().assignment(|id| {
         assign_fp
@@ -329,6 +342,7 @@ fn prove_streaming(
     });
     drop(assign_fp);
     let public = z[1..src.layout().num_instance()].to_vec();
+    let key_started = timing.then(Instant::now);
     let mut pk = super::read_artifact(
         pk_path,
         "proving key",
@@ -373,8 +387,9 @@ fn prove_streaming(
             _ => {}
         }
     }
+    let key_open_elapsed = phase_elapsed(key_started);
     let mut rng = prove_rng(args, pk_path)?;
-    let t_prove = std::time::Instant::now();
+    let t_prove = Instant::now();
     let cfg = xark_groth16::ProverConfig {
         spill_dir: args.low_memory.then(|| {
             pk_path
@@ -403,6 +418,8 @@ fn prove_streaming(
             anyhow::bail!("streaming prove: {e}")
         }
     };
+    let prove_elapsed = timing.then(|| t_prove.elapsed());
+    let cache_started = (timing && tee_tmp.is_some()).then(Instant::now);
     if let Some(tmp) = tee_tmp
         && pk.finish_tee()?
     {
@@ -411,9 +428,10 @@ fn prove_streaming(
             .with_context(|| format!("writing {}", decoded.display()))?;
         println!("Wrote {} (decoded key cache)", decoded.display());
     }
+    let prove_ended = Instant::now();
     let times = ProveTimes {
         solve: t_solve,
-        prove: t_prove.elapsed(),
+        prove: prove_ended.duration_since(t_prove),
     };
     if timing {
         eprintln!(
@@ -421,6 +439,25 @@ fn prove_streaming(
             times.prove,
             src.num_constraints()
         );
+    }
+    if let (Some(artifact_check_elapsed), Some(prove_elapsed)) =
+        (artifact_check_elapsed, prove_elapsed)
+    {
+        // The prover still streams and decodes the key and applies its checking
+        // policy. The earlier key phase only opens the key and selects a cache.
+        eprintln!(
+            "PROVE_TIME_PHASE: artifact_check={artifact_check_elapsed:?} row_source={row_source_elapsed:?} \
+             witness_solve={witness_solve_elapsed:?} (overlapping) \
+             key_open_and_cache_select={key_open_elapsed:?} \
+             prove={prove_elapsed:?} verify_requested={}",
+            args.verify
+        );
+        if let Some(started) = cache_started {
+            eprintln!(
+                "PROVE_TIME_PHASE: cache_finalize={:?}",
+                prove_ended.duration_since(started)
+            );
+        }
     }
     Ok((proof, public, times))
 }
