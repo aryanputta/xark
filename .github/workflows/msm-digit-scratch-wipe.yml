@@ -1,0 +1,26 @@
+name: MSM digit scratch correctness
+
+on:
+  push:
+    branches: [fix/msm-digit-scratch-wipe]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_TERM_COLOR: never
+      RAYON_NUM_THREADS: 2
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all -- --check
+      - name: Test Groth16 field, MSM and complete proofs
+        run: cargo test --locked --profile ci -p xark-groth16
+      - name: Strict Groth16 Clippy
+        run: cargo clippy --locked -p xark-groth16 --all-targets -- -D warnings
