@@ -88,3 +88,21 @@ Process monitoring was unavailable on the native workstation and the host showed
 The native replay measured 120 verified withdrawal B2 samples and 120 independently verified withdrawal proofs. Two-chain B2 p50 improved 7.71% in one order and regressed 4.74% in the other. Full-proof p50 moved −2.13% and −1.40%, while p95 moved −23.88% and +13.24%. The unchanged B1 control moved about −29% and +39%, and the host monitor was inaccessible. A separate fixed-base replay checked 30 alternating-order pairs for each fixture. Its median within-pair B2 change was −1.68% for escrow and −0.36% for withdrawal. The withdrawal change reversed across order groups. These native results lack an eligible speed improvement.
 
 [The pinned Colab replay](run-colab.sh) uses the original fixture fingerprints, the same release binary across both arms, two CPU workers, strict host monitoring, and independently verified B2 and complete-proof results. It records compiler flags and affinity for comparison with earlier runs. The synthetic adapter also passed five release tests and exported a byte-identical Arkworks-checked vector accepted by the ICICLE framing reader. [Synthetic adapter](https://github.com/aryanputta/xark/tree/perf/synthetic-query-msm-v05)
+
+## MSM experiment sequence
+
+An identical-binary control verified 120 withdrawal B2 samples. The nominal second arm appeared 3.20% and 2.87% faster at p50. Paired p95 changed −2.96% and +19.09%. Both arms used the same executable digest and mode. This is a practical lower bound on what can be distinguished on the current workstation.
+
+| Experiment | What to measure |
+| --- | --- |
+| MSM-01 | Report Fq add, subtraction, Montgomery multiplication, squaring and fused two-product throughput with verified outputs. |
+| MSM-02 | Compare the actual Xark artifact and pinned Gnark-generated Montgomery instructions with each toolchain identified. |
+| MSM-03 and MSM-05 | Isolate affine flush operation counts. The inverse-endpoint candidate saves three Fq2 products per nonempty batch and preserves one inversion. |
+| MSM-04 | Test multiplication by the sparse G2 endomorphism constant using two ordinary Fq products. Measure whether that differs from the compiler's generalized path. |
+| MSM-06 | Compare Constantine G2 and Xark on identical ordered inputs and normalized Arkworks references. |
+| MSM-07 | Retain the measured memory and setup cost of the fixed-base prototype. Repeat its timed stage only on an eligible host. |
+| MSM-08 | Disentangle affine-batch savings from bucket scheduling and layout changes. Keep the existing policy fixed in the endpoint A/B. |
+| MSM-09 | Compare two SMT siblings with two physical cores on the same socket. Keep the binary, worker count, fixture and operator settings fixed. |
+| MSM-10 | Compare the accepted changes with unchanged proving and verification settings on both real fixtures. |
+
+The Colab runner accepts `smt`, `physical` or `auto` as its fourth argument. Each mode records the Linux guest's allowed CPU set and reported core topology in `affinity.json`. The explicit modes fail if the required topology is unavailable. Virtualized core IDs describe the guest and may not establish underlying physical placement. Use the same runtime for both modes before drawing a placement conclusion.
