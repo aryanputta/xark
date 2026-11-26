@@ -157,6 +157,7 @@ pub(super) fn run_g2_endpoint_pairs(args: &[String]) {
     assert!(!super::tracking(), "set BENCH_TIME=1 to time query MSMs");
     for flag in [
         "BENCH_G2_TRIM_INVERSE_ENDPOINTS",
+        "BENCH_G2_SPARSE_ENDOMORPHISM",
         "NO_BATCH_AFFINE",
         "NO_GLV",
     ] {
@@ -210,6 +211,73 @@ pub(super) fn run_g2_endpoint_pairs(args: &[String]) {
             index + 1,
             baseline.as_nanos(),
             trimmed.as_nanos(),
+        );
+    }
+}
+
+#[cfg(feature = "msm-g2-endpoint-bench")]
+pub(super) fn run_g2_factorial(args: &[String]) {
+    let [xbc_path, pk_path, directory, options @ ..] = args else {
+        panic!(
+            "usage: bench_prove query-msm-g2-factorial <circuit.xbc> <reduced pk.bin> <statement-dir> [rounds] [warmups]"
+        );
+    };
+    let (samples, warmups) = counts(options).unwrap_or_else(|reason| panic!("{reason}"));
+    assert!(!super::tracking(), "set BENCH_TIME=1 to time query MSMs");
+    for flag in [
+        "BENCH_G2_TRIM_INVERSE_ENDPOINTS",
+        "BENCH_G2_SPARSE_ENDOMORPHISM",
+        "NO_BATCH_AFFINE",
+        "NO_GLV",
+    ] {
+        assert!(
+            std::env::var_os(flag).is_none(),
+            "unset {flag} for factorial timing"
+        );
+    }
+    const MODES: [&str; 4] = ["baseline", "sparse", "trimmed", "both"];
+    // Each four-round block covers all positions and immediate predecessor pairs.
+    const ORDERS: [[usize; 4]; 4] = [[0, 1, 3, 2], [1, 2, 0, 3], [2, 3, 1, 0], [3, 0, 2, 1]];
+    let (pk, scalars) = load(xbc_path, pk_path, Path::new(directory));
+    let bases = &pk.b_g2_query;
+    let expected = G2Projective::msm_bigint(bases, &scalars);
+    let mut timings = Vec::with_capacity(samples);
+    for iteration in 0..(samples + warmups) {
+        let order = ORDERS[iteration % ORDERS.len()];
+        let mut durations = [Duration::ZERO; 4];
+        for mode in order {
+            // Each call joins its Rayon tasks before the next selector update.
+            msm::set_bench_g2_sparse_endomorphism(mode & 1 != 0);
+            msm::set_bench_g2_trim_inverse_endpoints(mode & 2 != 0);
+            let (result, elapsed) = timed(|| msm::msm::<G2Projective>(bases, &scalars));
+            assert!(
+                msm::same_point(&result, &expected),
+                "B2 {} round {} differs from Arkworks",
+                MODES[mode],
+                iteration + 1
+            );
+            durations[mode] = elapsed;
+        }
+        if iteration >= warmups {
+            timings.push((order, durations));
+        }
+    }
+    msm::set_bench_g2_sparse_endomorphism(false);
+    msm::set_bench_g2_trim_inverse_endpoints(false);
+    println!(
+        "query msm g2 factorial verified: terms={} threads={} rounds={samples} warmups={warmups}",
+        scalars.len(),
+        rayon::current_num_threads()
+    );
+    for (index, (order, [baseline, sparse, trimmed, both])) in timings.into_iter().enumerate() {
+        let order = order.map(|mode| MODES[mode]).join(",");
+        println!(
+            "query msm g2 factorial: round={} order={order} baseline_ns={} sparse_ns={} trimmed_ns={} both_ns={}",
+            index + 1,
+            baseline.as_nanos(),
+            sparse.as_nanos(),
+            trimmed.as_nanos(),
+            both.as_nanos()
         );
     }
 }

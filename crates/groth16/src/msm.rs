@@ -32,6 +32,12 @@ pub trait SwCurve: CurveGroup<ScalarField = Fr, BaseField: crate::limbs::FastSub
     /// The group's GLV decomposition, and its endomorphism `φ` on a point.
     fn glv() -> &'static crate::glv::Glv;
     fn endo(a: &Self::Affine) -> Self::Affine;
+
+    #[cfg(feature = "msm-g2-endpoint-bench")]
+    #[doc(hidden)]
+    fn bench_sparse_endo(a: &Self::Affine) -> Self::Affine {
+        Self::endo(a)
+    }
 }
 
 impl<P> SwCurve for ark_ec::short_weierstrass::Projective<P>
@@ -67,6 +73,22 @@ where
     fn endo(a: &Self::Affine) -> Self::Affine {
         P::endomorphism_affine(a)
     }
+
+    #[cfg(feature = "msm-g2-endpoint-bench")]
+    #[inline(always)]
+    fn bench_sparse_endo(a: &Self::Affine) -> Self::Affine {
+        use ark_ec::scalar_mul::glv::GLVConfig;
+
+        if P::LAMBDA != ark_bn254::g2::Config::LAMBDA {
+            return Self::endo(a);
+        }
+        let mut coefficients = P::ENDO_COEFFS[0].to_base_prime_field_elements();
+        let real = coefficients.next().expect("endomorphism coefficient");
+        assert!(coefficients.all(|coefficient| coefficient.is_zero()));
+        let mut transformed = *a;
+        transformed.x = transformed.x.mul_by_base_prime_field(&real);
+        transformed
+    }
 }
 
 /// Accumulate buckets in affine coordinates with batched inversions (default
@@ -85,11 +107,22 @@ const BATCH: usize = 512;
 static G2_TRIM_INVERSE_ENDPOINTS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(feature = "msm-g2-endpoint-bench")]
+static G2_SPARSE_ENDOMORPHISM: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Toggle endpoint elision in G2 affine batch inversion before benchmarking.
 #[cfg(feature = "msm-g2-endpoint-bench")]
 #[doc(hidden)]
 pub fn set_bench_g2_trim_inverse_endpoints(enabled: bool) {
     G2_TRIM_INVERSE_ENDPOINTS.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Toggle the base-field specialization of the G2 GLV point map before benchmarking.
+#[cfg(feature = "msm-g2-endpoint-bench")]
+#[doc(hidden)]
+pub fn set_bench_g2_sparse_endomorphism(enabled: bool) {
+    G2_SPARSE_ENDOMORPHISM.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Affine buckets filled by batch-affine additions: each `(bucket, point)` addition
@@ -466,6 +499,21 @@ fn pippenger<G: SwCurve>(
     {
         return pippenger_core(bases, scalars, entries, bits, false);
     }
+    #[cfg(feature = "msm-g2-endpoint-bench")]
+    if G::BaseField::extension_degree() == 2
+        && G2_SPARSE_ENDOMORPHISM.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return pippenger_glv::<G>(bases, scalars, entries, G::bench_sparse_endo);
+    }
+    pippenger_glv::<G>(bases, scalars, entries, G::endo)
+}
+
+fn pippenger_glv<G: SwCurve>(
+    bases: &[G::Affine],
+    scalars: &[Scalar],
+    entries: &[u32],
+    endomorphism: impl Fn(&G::Affine) -> G::Affine + Sync,
+) -> G {
     let glv = G::glv();
     let modulus = Fr::MODULUS;
     let n = entries.len();
@@ -484,7 +532,7 @@ fn pippenger<G: SwCurve>(
                 }
                 let ((s1, k1), (s2, k2)) = glv.decompose(&s);
                 let b = bases[i];
-                let phi = G::endo(&b);
+                let phi = endomorphism(&b);
                 p[2 * j] = if s1 { b } else { -b };
                 p[2 * j + 1] = if s2 { phi } else { -phi };
                 k[2 * j] = k1;
@@ -736,6 +784,26 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
 mod tests {
     use super::*;
     use ark_ff::Zero;
+
+    #[cfg(feature = "msm-g2-endpoint-bench")]
+    #[test]
+    fn sparse_endomorphism_matches_arkworks_for_g2_and_leaves_g1_unchanged() {
+        use ark_bn254::{G1Affine, G1Projective, G2Affine, G2Projective};
+        use ark_ec::AffineRepr;
+
+        for scalar in [0, 1, 2, 17, u64::MAX] {
+            let g2 = G2Affine::generator().mul_bigint([scalar]).into_affine();
+            let g1 = G1Affine::generator().mul_bigint([scalar]).into_affine();
+            assert_eq!(
+                G2Projective::bench_sparse_endo(&g2),
+                G2Projective::endo(&g2)
+            );
+            assert_eq!(
+                G1Projective::bench_sparse_endo(&g1),
+                G1Projective::endo(&g1)
+            );
+        }
+    }
 
     #[cfg(feature = "msm-g2-endpoint-bench")]
     #[test]
