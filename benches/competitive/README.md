@@ -36,6 +36,8 @@ The output directory must be new. It receives logs, raw nanosecond `samples.csv`
 
 To pair two Xark builds, include a `candidate` object with a `binary` path and add a corresponding `sources.xark_candidate` commit pin. An optional `candidate.environment` map selects candidate-only `BENCH_*` flags. An optional single-line `candidate.receipt` checks that the candidate emitted the expected mode. Run `--competitor xark --xark-query b2` to compare B2 against the Arkworks reference. Omit `--xark-query` to compare checked resident proof times on both workloads.
 
+To compare the candidate directly with Gnark, set `candidate.lanes` to `["gnark"]` and supply a nonempty single-line `candidate.receipt`, such as `bench shared B scalars: 1`. Use `--competitor gnark`. The pinned baseline exporter still produces the relation and witness. Candidate flags apply only to the candidate's resident proof subprocess. Gnark uses the independently pinned adapter binary. The report records `xark_reference` and uses that arm as the denominator for `competitor_over_xark`. With `candidate.lanes` omitted, the candidate still applies only to Xark-versus-Xark comparisons.
+
 ```sh
 python3 -m unittest discover -s benches/competitive -v
 ```

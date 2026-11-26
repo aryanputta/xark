@@ -1,0 +1,42 @@
+name: Pinned Gnark adapter build
+
+on:
+  push:
+    branches: [feat/paired-gnark-candidate]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          ref: dc8ad92e0bdf34da5d614b39125127ce91aa116b
+          path: adapter-source
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.4'
+          cache-dependency-path: adapter-source/benches/privacy-rings-gnark/go.sum
+      - name: Validate runner receipts
+        run: python3 -m unittest discover -s benches/competitive -p test_run.py
+      - name: Build pinned native and macOS adapters
+        working-directory: adapter-source/benches/privacy-rings-gnark
+        run: |
+          out="$GITHUB_WORKSPACE/artifact"
+          mkdir "$out"
+          git rev-parse HEAD > "$out/source-commit.txt"
+          sha256sum go.mod go.sum > "$out/module-inputs.sha256"
+          go test -mod=readonly ./...
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -o "$out/gnark-linux-amd64" .
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -mod=readonly -trimpath -o "$out/gnark-darwin-amd64" .
+          cd "$out"
+          go version -m gnark-linux-amd64 gnark-darwin-amd64 > build-info.txt
+          sha256sum gnark-linux-amd64 gnark-darwin-amd64 > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinned-gnark-adapters
+          path: artifact/

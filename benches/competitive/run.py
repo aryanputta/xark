@@ -53,10 +53,34 @@ def capture(command):
     ).strip()
 
 
+def candidate_lanes(config):
+    if "candidate" not in config:
+        return []
+    candidate = config["candidate"]
+    require(isinstance(candidate, dict), "candidate must be an object")
+    lanes = candidate.get("lanes", ["xark"])
+    require(
+        isinstance(lanes, list)
+        and bool(lanes)
+        and all(lane in ("xark", "gnark") for lane in lanes)
+        and len(set(lanes)) == len(lanes),
+        "candidate lanes must select xark, gnark, or both once",
+    )
+    if "gnark" in lanes:
+        receipt = candidate.get("receipt")
+        require(
+            isinstance(receipt, str)
+            and bool(receipt.strip())
+            and len(receipt.splitlines()) == 1,
+            "Gnark pairing requires a single-line Xark candidate receipt",
+        )
+    return lanes
+
+
 def revisions(config, root, competitors):
     sources = config["sources"]
     needed = {"xark", "examples"}
-    if "xark" in competitors and "candidate" in config:
+    if set(competitors).intersection(candidate_lanes(config)):
         needed.add("xark_candidate")
     needed.update(set(competitors) & {"rapidsnark", "constantine", "icicle"})
     require(needed <= sources.keys(), f"source pins required for {sorted(needed)}")
@@ -429,8 +453,12 @@ def run_suite(args):
         "rapidsnark" not in competitors or os.cpu_count() == args.threads,
         "Rapidsnark needs a host/VM with online CPU count equal to the thread budget",
     )
-    candidate = config.get("candidate") if "xark" in competitors else None
-    require(not args.xark_query or candidate, "Xark query comparison needs a candidate")
+    lanes = set(competitors).intersection(candidate_lanes(config))
+    candidate = config["candidate"] if lanes else None
+    require(
+        not args.xark_query or "xark" in lanes,
+        "Xark query comparison needs a candidate",
+    )
     files = {
         "config": config_path,
         "harness": Path(__file__).resolve(),
@@ -502,8 +530,7 @@ def run_suite(args):
         name: value
         for name, value in os.environ.items()
         if name not in BENCH_ENV
-        and name not in candidate_env
-        and not name.startswith(("RAYON_", "OMP_", "GOMAXPROCS"))
+        and not name.startswith(("BENCH_", "RAYON_", "OMP_", "GOMAXPROCS"))
     }
     budget = str(args.threads)
     controlled = {
@@ -659,14 +686,23 @@ def run_suite(args):
         for competitor in competitors:
             lane = SCOPES[competitor]
             queries = QUERY.get(competitor)
-            candidate_active = competitor == "xark" and candidate is not None
+            candidate_active = competitor == "xark" and "xark" in lanes
+            gnark_candidate = competitor == "gnark" and "gnark" in lanes
+            xark_reference = "xark-candidate" if gnark_candidate else "xark"
             if candidate_active and args.xark_query:
                 lane = "resident-query-" + args.xark_query
                 queries = (args.xark_query,)
             control = {"BENCH_PUBLIC_STATEMENTS": str(fixture)}
             if competitor != "rapidsnark":
                 control["BENCH_CHECK_ROWS"] = "1"
-            command = (bench, "warm", circuit, key, inputs, *parameters)
+            command = (
+                files["candidate"] if gnark_candidate else bench,
+                "warm",
+                circuit,
+                key,
+                inputs,
+                *parameters,
+            )
             adapter = None
             if queries:
                 control = {}
@@ -722,7 +758,13 @@ def run_suite(args):
                 adapter = (files["candidate"], *command[1:])
             paired_backend = "xark-candidate" if candidate_active else competitor
             for index in range(args.pairs):
-                arms = [("xark", command, control)]
+                arms = [
+                    (
+                        xark_reference,
+                        command,
+                        control | candidate_env if gnark_candidate else control,
+                    )
+                ]
                 if adapter:
                     arms.append(
                         (
@@ -807,7 +849,7 @@ def run_suite(args):
                 if adapter and competitor != "rapidsnark":
                     ratios = {
                         metric: medians[paired_backend][metric] / value
-                        for metric, value in medians["xark"].items()
+                        for metric, value in medians[xark_reference].items()
                     }
                 report["comparisons"].append(
                     {
@@ -819,6 +861,7 @@ def run_suite(args):
                         "median_ns": medians,
                         "arm_statistics": arm_statistics,
                         "competitor_over_xark": ratios,
+                        "xark_reference": xark_reference,
                     }
                 )
         require(

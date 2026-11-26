@@ -4,10 +4,34 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import changed_oracle, proof_samples, query_samples, summarize
+from run import candidate_lanes, changed_oracle, proof_samples, query_samples, summarize
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_gnark_candidate_requires_explicit_lane_and_single_line_receipt(self):
+        self.assertEqual(candidate_lanes({}), [])
+        self.assertEqual(candidate_lanes({"candidate": {}}), ["xark"])
+        self.assertEqual(
+            candidate_lanes(
+                {
+                    "candidate": {
+                        "lanes": ["xark", "gnark"],
+                        "receipt": "configured mode",
+                    }
+                }
+            ),
+            ["xark", "gnark"],
+        )
+        for candidate in (
+            {"lanes": ["gnark"]},
+            {"lanes": ["gnark"], "receipt": "mode\nother mode"},
+            {"lanes": ["gnark", "gnark"], "receipt": "mode"},
+            {"lanes": ["rapidsnark"], "receipt": "mode"},
+            {"lanes": "gnark", "receipt": "mode"},
+        ):
+            with self.assertRaises(ValueError):
+                candidate_lanes({"candidate": candidate})
+
     def test_xark_requires_positive_timing_and_rejection(self):
         log = (
             "resident includes row checks: true\n"
