@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use ark_bn254::{Bn254, Fr};
 use ark_groth16::{Groth16, prepare_verifying_key};
+use ark_serialize::CanonicalSerialize;
 use rayon::prelude::*;
 use xark_groth16::{BytecodeSource, ConstraintSource, Cpu, InMemoryPk, Proof, ProverConfig};
 use zeroize::{Zeroize, Zeroizing};
@@ -126,8 +127,23 @@ pub(super) fn run(args: &[OsString]) {
         let proof =
             xark_groth16::prove_with_rng(&mut prover, &source, &witness, &mut rand::thread_rng())
                 .expect("generate request proof");
+        let public = &witness[1..source.layout().num_instance()];
+        assert!(
+            xark_groth16::verify(&key.vk, public, &proof).expect("self-check resident proof"),
+            "resident proof failed its public statement"
+        );
+        let mut result = xark_prover::CircuitProof {
+            proof: Vec::new(),
+            public_inputs: Vec::new(),
+        };
+        proof
+            .serialize_compressed(&mut result.proof)
+            .expect("serialize resident proof");
+        public
+            .serialize_compressed(&mut result.public_inputs)
+            .expect("serialize resident public inputs");
         drop(witness);
-        (proof, began.elapsed(), solve_elapsed)
+        (proof, result, began.elapsed(), solve_elapsed)
     };
 
     let verify = |index: usize, proof: &Proof<Bn254>| {
@@ -156,7 +172,7 @@ pub(super) fn run(args: &[OsString]) {
         let last = first.saturating_add(concurrency).min(requests);
         let proofs: Vec<_> = (first..last).into_par_iter().map(prove).collect();
         let elapsed = start.elapsed();
-        for (index, (proof, _, _)) in (first..last).zip(&proofs) {
+        for (index, (proof, _, _, _)) in (first..last).zip(&proofs) {
             verify(index, proof);
         }
         println!(
@@ -164,7 +180,7 @@ pub(super) fn run(args: &[OsString]) {
             last - first,
             elapsed.as_nanos()
         );
-        for (index, (_, elapsed, solve_elapsed)) in (first..last).zip(&proofs) {
+        for (index, (_, _, elapsed, solve_elapsed)) in (first..last).zip(&proofs) {
             println!(
                 "request verified index={index} fixture={} service_ns={}",
                 index % fixtures.len(),
@@ -177,6 +193,7 @@ pub(super) fn run(args: &[OsString]) {
         }
     }
     eprintln!("upstream verified request wrapper: 1");
+    eprintln!("upstream timed self-check and serialization: 1");
     println!(
         "requests verified mode=cpu concurrency={concurrency} threads={} count={requests} setup_ns={} altered=rejected cross_request=rejected",
         rayon::current_num_threads(),
