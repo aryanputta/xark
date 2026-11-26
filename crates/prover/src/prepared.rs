@@ -11,6 +11,22 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::{CircuitProof, ProveError, ProveInputs, owned_rows_for_key};
 
+// The solver borrows decimal strings. Wipe them on return and unwinding.
+#[derive(Default)]
+struct RequestDecimals(BTreeMap<u32, String>);
+
+impl RequestDecimals {
+    fn wipe(&mut self) {
+        self.0.values_mut().for_each(Zeroize::zeroize);
+    }
+}
+
+impl Drop for RequestDecimals {
+    fn drop(&mut self) {
+        self.wipe();
+    }
+}
+
 /// Repeated BN254 proving for one immutable circuit and resident key.
 ///
 /// Construction validates the key's points and prepares the witness and row
@@ -83,7 +99,7 @@ impl PreparedCpuProver {
     /// Solve, prove and self-check a fresh request. The proof and public inputs
     /// use the same canonical encodings as [`crate::Circuit::prove`].
     pub fn prove(&self, inputs: impl ProveInputs) -> Result<CircuitProof, ProveError> {
-        let mut decimal = BTreeMap::new();
+        let mut decimal = RequestDecimals::default();
         let solved = (|| {
             let values = Zeroizing::new(inputs.into_inputs());
             for (name, value) in values.iter() {
@@ -91,18 +107,18 @@ impl PreparedCpuProver {
                     .inputs
                     .get(name)
                     .ok_or_else(|| ProveError("unknown circuit input".into()))?;
-                let std::collections::btree_map::Entry::Vacant(entry) = decimal.entry(*id) else {
+                let std::collections::btree_map::Entry::Vacant(entry) = decimal.0.entry(*id) else {
                     return Err(ProveError("duplicate circuit input".into()));
                 };
                 entry.insert(value.into_bigint().to_string());
             }
             drop(values);
-            if decimal.len() != self.inputs.len() {
+            if decimal.0.len() != self.inputs.len() {
                 return Err(ProveError("missing circuit input".into()));
             }
-            self.solver.solve_verify(&decimal).map_err(ProveError)
+            self.solver.solve_verify(&decimal.0).map_err(ProveError)
         })();
-        decimal.values_mut().for_each(Zeroize::zeroize);
+        drop(decimal);
         let (mut assignment, _) = solved?;
         let layout = self.rows.layout();
         let witness =
@@ -131,5 +147,20 @@ impl PreparedCpuProver {
             .serialize_compressed(&mut result.public_inputs)
             .map_err(|err| ProveError(err.to_string()))?;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RequestDecimals;
+
+    #[test]
+    fn request_decimal_values_are_cleared_in_place() {
+        let mut values = RequestDecimals::default();
+        values.0.insert(1, "12345678901234567890".into());
+        values.0.insert(2, "98765432109876543210".into());
+        values.wipe();
+        assert_eq!(values.0.len(), 2);
+        assert!(values.0.values().all(String::is_empty));
     }
 }
