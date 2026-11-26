@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import random
 import re
+import shutil
 import statistics
 import sys
 
@@ -23,6 +24,14 @@ FACTORS = (
     ("BENCH_G2_TRIM_INVERSE_ENDPOINTS", "bench g2 trim inverse endpoints"),
     ("BENCH_G2_SPARSE_ENDOMORPHISM", "bench g2 sparse endomorphism"),
     ("BENCH_G2_SHIFTED", "bench g2 shifted"),
+)
+PERF_EVENTS = (
+    "cycles",
+    "instructions",
+    "cache-references",
+    "cache-misses",
+    "branches",
+    "branch-misses",
 )
 SPAN = re.compile(r"^resident task: (\d+) (\w+) (\d+) (\d+)$", re.M)
 
@@ -180,6 +189,12 @@ def run(args):
             not runner.processes(os.getpgrp(), args.contention_percent),
             "host preflight detected contention",
         )
+    if args.perf_counters:
+        runner.require(
+            sys.platform == "linux" and shutil.which("perf"),
+            "perf is unavailable on this host",
+        )
+    args.output = args.output.resolve()
     args.output.mkdir(mode=0o700)
     env = os.environ.copy()
     for key in ("NO_BATCH_AFFINE", "NO_GLV", "CHECK", "BENCH_ESCROW_STATEMENTS"):
@@ -205,6 +220,9 @@ def run(args):
         "seed": args.seed,
         "threads": args.threads,
         "diagnostic": args.diagnostic,
+        "perf_scope": "whole benchmark process, including setup and verification"
+        if args.perf_counters
+        else None,
         "samples_per_block": args.samples,
         "warmups": args.warmups,
         "runs": [],
@@ -243,8 +261,24 @@ def run(args):
                         name: str((arm >> index) & 1)
                         for index, (name, _) in enumerate(FACTORS)
                     }
+                    invocation = command
+                    counters = None
+                    if args.perf_counters:
+                        counters = args.output / f"{label}.perf.csv"
+                        invocation = [
+                            "perf",
+                            "stat",
+                            "--no-big-num",
+                            "-x,",
+                            "-e",
+                            ",".join(PERF_EVENTS),
+                            "-o",
+                            str(counters),
+                            "--",
+                            *command,
+                        ]
                     code, log, contention = runner.execute(
-                        command,
+                        invocation,
                         env | settings | {"BENCH_PUBLIC_STATEMENTS": str(fixture)},
                         args.output,
                         label,
@@ -258,6 +292,11 @@ def run(args):
                             and not contention["observed"]
                             and not contention["error"],
                             f"{label} host control failed",
+                        )
+                    if counters is not None:
+                        verify_counters(runner, counters)
+                        contention["sampled_peak_rss_kib"] = (
+                            None  # sampler sees the perf wrapper
                         )
                     rows, setup = parse_trial(runner, log, settings, args)
                     for sample, (proof, start, b2, peer_end) in enumerate(rows, 1):
@@ -288,6 +327,7 @@ def run(args):
                             "block": block,
                             "arm": arm,
                             "position": position,
+                            "perf_csv": counters.name if counters else None,
                             "setup": setup,
                             "host": contention,
                             "verified_proofs": len(rows),
@@ -307,6 +347,18 @@ def run(args):
     (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(
         f"Verified {sum(row['verified_proofs'] for row in report['runs'])} complete proofs"
+    )
+
+
+def verify_counters(runner, path):
+    with path.open(newline="") as stream:
+        events = {
+            row[2]: int(row[0])
+            for row in csv.reader(stream)
+            if len(row) >= 3 and row[2] in PERF_EVENTS and row[0].isdigit()
+        }
+    runner.require(
+        set(events) == set(PERF_EVENTS), "missing or unsupported perf counters"
     )
 
 
@@ -361,6 +413,7 @@ def main():
     parser.add_argument("--timeout", type=float, default=300)
     parser.add_argument("--contention-percent", type=float, default=20)
     parser.add_argument("--diagnostic", action="store_true")
+    parser.add_argument("--perf-counters", action="store_true")
     args = parser.parse_args()
     if (
         min(
