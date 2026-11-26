@@ -144,6 +144,7 @@ def execute(argv, env, out, label, timeout, threshold=None):
     load_before = os.getloadavg()
     polls = 0
     observation_error = None
+    peak_rss = None
     deadline = time.monotonic() + timeout
     with log.open("w") as stream:
         with subprocess.Popen(
@@ -157,6 +158,14 @@ def execute(argv, env, out, label, timeout, threshold=None):
         ) as process:
             try:
                 while process.poll() is None:
+                    if threshold is not None and sys.platform == "linux":
+                        try:
+                            status = Path(f"/proc/{process.pid}/status").read_text()
+                        except OSError:
+                            status = ""
+                        rss = re.search(r"^VmHWM:\s+(\d+) kB$", status, re.M)
+                        if rss:
+                            peak_rss = max(peak_rss or 0, int(rss[1]))
                     if threshold is not None and observation_error is None:
                         try:
                             observed = processes(process.pid, threshold)
@@ -188,6 +197,7 @@ def execute(argv, env, out, label, timeout, threshold=None):
             "polls": polls,
             "observed": list(observations.values()),
             "error": observation_error,
+            "sampled_peak_rss_kib": peak_rss,
             "load_average_before": load_before,
             "load_average_after": os.getloadavg(),
         },
@@ -717,6 +727,7 @@ def run_suite(args):
                     if index % 2:
                         arms.reverse()
                 medians = {}
+                arm_statistics = {}
                 for order, (backend, argv, additions) in enumerate(arms, 1):
                     label = f"{workload}-{competitor}-{index + 1}-{backend}"
                     log = invoke(argv, label, additions=additions, measured=True)
@@ -763,6 +774,9 @@ def run_suite(args):
                         else VERIFY[parser_backend]
                     )
                     medians[backend] = {}
+                    arm_statistics[backend] = {
+                        metric: summarize(times) for metric, times in timings.items()
+                    }
                     for metric, times in timings.items():
                         medians[backend][metric] = statistics.median(times)
                         summaries.setdefault(
@@ -796,6 +810,7 @@ def run_suite(args):
                         "pair": index + 1,
                         "order": [backend for backend, _, _ in arms],
                         "median_ns": medians,
+                        "arm_statistics": arm_statistics,
                         "competitor_over_xark": ratios,
                     }
                 )
