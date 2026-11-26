@@ -422,7 +422,8 @@ fn pippenger<G: SwCurve>(
     let modulus = Fr::MODULUS;
     let n = entries.len();
     let mut pts = vec![G::Affine::default(); 2 * n];
-    let mut sc = vec![Scalar::default(); 2 * n];
+    // GLV components still encode request scalars after digit recoding.
+    let mut sc = Zeroizing::new(vec![Scalar::default(); 2 * n]);
     pts.par_chunks_mut(2 * 1024)
         .zip(sc.par_chunks_mut(2 * 1024))
         .zip(entries.par_chunks(1024))
