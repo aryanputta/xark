@@ -13,6 +13,7 @@ use xark_groth16::{BytecodeSource, ConstraintSource, ProvingKey};
 
 const MAGIC: &[u8; 8] = b"XKQMSM01";
 
+#[cfg(feature = "msm-g2-shifted-bench")]
 #[path = "shifted_b2.rs"]
 pub(super) mod shifted_b2;
 

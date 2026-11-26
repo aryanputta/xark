@@ -18,6 +18,10 @@ use ark_ff::{BigInteger, Field, One, PrimeField, Zero};
 use ark_serialize::CanonicalSerialize;
 use rayon::prelude::*;
 
+#[cfg(feature = "msm-g2-shifted-bench")]
+#[doc(hidden)]
+pub mod shifted;
+
 /// A scalar in canonical (non-Montgomery) integer form.
 pub type Scalar = <Fr as PrimeField>::BigInt;
 

@@ -140,6 +140,13 @@ pub trait Probe {
     fn resident_timings(&self) -> Option<&ResidentTimingSink<'_>> {
         None
     }
+
+    /// Experimental resident B2 preparation for a controlled proof benchmark.
+    #[cfg(feature = "msm-g2-shifted-bench")]
+    #[doc(hidden)]
+    fn shifted_g2(&self) -> Option<&crate::msm::shifted::ShiftedBases<'_>> {
+        None
+    }
 }
 
 impl Probe for () {}
@@ -632,6 +639,8 @@ where
         let (mut a, mut b1, mut b2, mut l) = (None, None, None, None);
         let mut h = None;
         let timings = probe.resident_timings();
+        #[cfg(feature = "msm-g2-shifted-bench")]
+        let shifted_g2 = probe.shifted_g2();
         rayon::scope(|sc| {
             sc.spawn(|_| {
                 h = Some(
@@ -659,6 +668,15 @@ where
             }
             sc.spawn(|_| {
                 b2 = Some(time_resident(timings, "msm_b2", || {
+                    #[cfg(feature = "msm-g2-shifted-bench")]
+                    if let Some(table) = shifted_g2 {
+                        assert!(table.matches(&key.b_g2_query), "shifted B2 key mismatch");
+                        assert!(
+                            chunk >= key.b_g2_query.len(),
+                            "shifted B2 requires an unchunked query"
+                        );
+                        return table.msm(&z_sc(0, key.b_g2_query.len()));
+                    }
                     resident_msm(&key.b_g2_query, chunk, &z_sc)
                 }));
             });
