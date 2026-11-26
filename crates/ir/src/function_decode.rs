@@ -3370,6 +3370,10 @@ mod eval {
 }
 
 #[cfg(test)]
+#[path = "function_decode/solver_ablation.rs"]
+mod solver_ablation;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
