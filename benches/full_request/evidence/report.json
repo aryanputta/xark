@@ -1,0 +1,591 @@
+{
+  "binary_sha256": "c0574e7fedb778b9ec10fef5b57be151e752f1d037db138702f309f2800fca16",
+  "manifest_sha256": "0436bedbae33912331d7306b9c1406956be5695d43f85f5c750f19bbb9bcce41",
+  "host": "macOS-26.5.1-x86_64-i386-64bit-Mach-O",
+  "workers": 2,
+  "concurrency": 1,
+  "requests": 8,
+  "blocks": 2,
+  "max_median_drift": 0.02,
+  "max_p95_drift": 0.1,
+  "same_binary_control": {
+    "passed": false,
+    "pairs": [
+      {
+        "fixture": "escrow",
+        "block": 1,
+        "median_drift": 0.008213307441533813,
+        "p95_drift": 0.0062231614426182524,
+        "passed": true
+      },
+      {
+        "fixture": "escrow",
+        "block": 2,
+        "median_drift": 0.04574089241134316,
+        "p95_drift": 0.002765243968449571,
+        "passed": false
+      },
+      {
+        "fixture": "withdrawal",
+        "block": 1,
+        "median_drift": 0.011053087308418696,
+        "p95_drift": 0.038817869702104435,
+        "passed": true
+      },
+      {
+        "fixture": "withdrawal",
+        "block": 2,
+        "median_drift": 0.011214057604046701,
+        "p95_drift": 0.03405732568672337,
+        "passed": true
+      }
+    ]
+  },
+  "performance_eligible": false,
+  "runs": [
+    {
+      "fixture": "escrow",
+      "block": 1,
+      "arm": "A",
+      "position": 1,
+      "p50_ns": 525352825.0,
+      "p95_ns": 534442788,
+      "process_ns": 6527228787,
+      "peak_rss_bytes": 156782592,
+      "load_start": [
+        10.8564453125,
+        17.236328125,
+        15.37548828125
+      ],
+      "load_end": [
+        9.94287109375,
+        16.83203125,
+        15.25390625
+      ],
+      "setup_ns": 746314819,
+      "waves": [
+        {
+          "wall_ns": 525137413,
+          "overlap": false
+        },
+        {
+          "wall_ns": 534445796,
+          "overlap": false
+        },
+        {
+          "wall_ns": 528107607,
+          "overlap": false
+        },
+        {
+          "wall_ns": 526386257,
+          "overlap": false
+        },
+        {
+          "wall_ns": 525576875,
+          "overlap": false
+        },
+        {
+          "wall_ns": 524713618,
+          "overlap": false
+        },
+        {
+          "wall_ns": 513955615,
+          "overlap": false
+        },
+        {
+          "wall_ns": 515572842,
+          "overlap": false
+        }
+      ],
+      "services_ns": [
+        525131890,
+        534442788,
+        528103787,
+        526382545,
+        525573760,
+        524708675,
+        513950737,
+        515564767
+      ],
+      "active_proofs_per_second": 1.9075341773202563,
+      "service_median_ns": 525352825.0,
+      "overlapped_waves": 0
+    },
+    {
+      "fixture": "escrow",
+      "block": 1,
+      "arm": "B",
+      "position": 2,
+      "p50_ns": 521073091.5,
+      "p95_ns": 531137434,
+      "process_ns": 5876398055,
+      "peak_rss_bytes": 165511168,
+      "load_start": [
+        9.94287109375,
+        16.83203125,
+        15.25390625
+      ],
+      "load_end": [
+        9.787109375,
+        16.68505859375,
+        15.2109375
+      ],
+      "setup_ns": 833985245,
+      "waves": [
+        {
+          "wall_ns": 530059856,
+          "overlap": false
+        },
+        {
+          "wall_ns": 524980032,
+          "overlap": false
+        },
+        {
+          "wall_ns": 521565379,
+          "overlap": false
+        },
+        {
+          "wall_ns": 519055345,
+          "overlap": false
+        },
+        {
+          "wall_ns": 514117101,
+          "overlap": false
+        },
+        {
+          "wall_ns": 531141033,
+          "overlap": false
+        },
+        {
+          "wall_ns": 520589923,
+          "overlap": false
+        },
+        {
+          "wall_ns": 514841580,
+          "overlap": false
+        }
+      ],
+      "services_ns": [
+        530056842,
+        524975847,
+        521560465,
+        519052181,
+        514112373,
+        531137434,
+        520585718,
+        514838210
+      ],
+      "active_proofs_per_second": 1.915548151622472,
+      "service_median_ns": 521073091.5,
+      "overlapped_waves": 0
+    },
+    {
+      "fixture": "escrow",
+      "block": 2,
+      "arm": "B",
+      "position": 1,
+      "p50_ns": 521079548.0,
+      "p95_ns": 529599729,
+      "process_ns": 5763204492,
+      "peak_rss_bytes": 155705344,
+      "load_start": [
+        9.787109375,
+        16.68505859375,
+        15.2109375
+      ],
+      "load_end": [
+        9.4033203125,
+        16.49072265625,
+        15.15087890625
+      ],
+      "setup_ns": 737355289,
+      "waves": [
+        {
+          "wall_ns": 529606086,
+          "overlap": false
+        },
+        {
+          "wall_ns": 521695736,
+          "overlap": false
+        },
+        {
+          "wall_ns": 525319840,
+          "overlap": false
+        },
+        {
+          "wall_ns": 520470932,
+          "overlap": false
+        },
+        {
+          "wall_ns": 518998401,
+          "overlap": false
+        },
+        {
+          "wall_ns": 513275965,
+          "overlap": false
+        },
+        {
+          "wall_ns": 511281725,
+          "overlap": false
+        },
+        {
+          "wall_ns": 527410977,
+          "overlap": false
+        }
+      ],
+      "services_ns": [
+        529599729,
+        521691587,
+        525316781,
+        520467509,
+        518995326,
+        513272977,
+        511278398,
+        527407689
+      ],
+      "active_proofs_per_second": 1.9193583222753783,
+      "service_median_ns": 521079548.0,
+      "overlapped_waves": 0
+    },
+    {
+      "fixture": "escrow",
+      "block": 2,
+      "arm": "A",
+      "position": 2,
+      "p50_ns": 498287436.0,
+      "p95_ns": 528139295,
+      "process_ns": 5597199396,
+      "peak_rss_bytes": 152453120,
+      "load_start": [
+        9.4033203125,
+        16.49072265625,
+        15.15087890625
+      ],
+      "load_end": [
+        9.13037109375,
+        16.31640625,
+        15.09716796875
+      ],
+      "setup_ns": 745901819,
+      "waves": [
+        {
+          "wall_ns": 528145495,
+          "overlap": false
+        },
+        {
+          "wall_ns": 519082418,
+          "overlap": false
+        },
+        {
+          "wall_ns": 498884500,
+          "overlap": false
+        },
+        {
+          "wall_ns": 496194018,
+          "overlap": false
+        },
+        {
+          "wall_ns": 498358008,
+          "overlap": false
+        },
+        {
+          "wall_ns": 488674664,
+          "overlap": false
+        },
+        {
+          "wall_ns": 498224507,
+          "overlap": false
+        },
+        {
+          "wall_ns": 491606717,
+          "overlap": false
+        }
+      ],
+      "services_ns": [
+        528139295,
+        519079418,
+        498881505,
+        496189563,
+        498354102,
+        488668841,
+        498220770,
+        491603245
+      ],
+      "active_proofs_per_second": 1.9904605550696781,
+      "service_median_ns": 498287436.0,
+      "overlapped_waves": 0
+    },
+    {
+      "fixture": "withdrawal",
+      "block": 1,
+      "arm": "A",
+      "position": 1,
+      "p50_ns": 375815059.5,
+      "p95_ns": 390228166,
+      "process_ns": 4171712973,
+      "peak_rss_bytes": 103309312,
+      "load_start": [
+        9.13037109375,
+        16.31640625,
+        15.09716796875
+      ],
+      "load_end": [
+        9.27978515625,
+        16.22802734375,
+        15.07275390625
+      ],
+      "setup_ns": 517612516,
+      "waves": [
+        {
+          "wall_ns": 390231652,
+          "overlap": false
+        },
+        {
+          "wall_ns": 383867031,
+          "overlap": false
+        },
+        {
+          "wall_ns": 379691929,
+          "overlap": false
+        },
+        {
+          "wall_ns": 374976450,
+          "overlap": false
+        },
+        {
+          "wall_ns": 369123179,
+          "overlap": false
+        },
+        {
+          "wall_ns": 369180428,
+          "overlap": false
+        },
+        {
+          "wall_ns": 376661733,
+          "overlap": false
+        },
+        {
+          "wall_ns": 372045057,
+          "overlap": false
+        }
+      ],
+      "services_ns": [
+        390228166,
+        383863534,
+        379687786,
+        374972374,
+        369118542,
+        369177372,
+        376657745,
+        372040146
+      ],
+      "active_proofs_per_second": 2.652715629306652,
+      "service_median_ns": 375815059.5,
+      "overlapped_waves": 0
+    },
+    {
+      "fixture": "withdrawal",
+      "block": 1,
+      "arm": "B",
+      "position": 2,
+      "p50_ns": 371706554.5,
+      "p95_ns": 375646374,
+      "process_ns": 4123447335,
+      "peak_rss_bytes": 99864576,
+      "load_start": [
+        9.27978515625,
+        16.22802734375,
+        15.07275390625
+      ],
+      "load_end": [
+        9.25732421875,
+        16.10791015625,
+        15.037109375
+      ],
+      "setup_ns": 517787684,
+      "waves": [
+        {
+          "wall_ns": 375650529,
+          "overlap": false
+        },
+        {
+          "wall_ns": 368353187,
+          "overlap": false
+        },
+        {
+          "wall_ns": 372328879,
+          "overlap": false
+        },
+        {
+          "wall_ns": 371489737,
+          "overlap": false
+        },
+        {
+          "wall_ns": 371654309,
+          "overlap": false
+        },
+        {
+          "wall_ns": 371087761,
+          "overlap": false
+        },
+        {
+          "wall_ns": 371769833,
+          "overlap": false
+        },
+        {
+          "wall_ns": 371829176,
+          "overlap": false
+        }
+      ],
+      "services_ns": [
+        375646374,
+        368350284,
+        372325734,
+        371485989,
+        371651474,
+        371084175,
+        371761635,
+        371826269
+      ],
+      "active_proofs_per_second": 2.689832028197189,
+      "service_median_ns": 371706554.5,
+      "overlapped_waves": 0
+    },
+    {
+      "fixture": "withdrawal",
+      "block": 2,
+      "arm": "B",
+      "position": 1,
+      "p50_ns": 376178714.5,
+      "p95_ns": 382462649,
+      "process_ns": 4164183010,
+      "peak_rss_bytes": 111214592,
+      "load_start": [
+        9.25732421875,
+        16.10791015625,
+        15.037109375
+      ],
+      "load_end": [
+        9.25732421875,
+        16.10791015625,
+        15.037109375
+      ],
+      "setup_ns": 517971120,
+      "waves": [
+        {
+          "wall_ns": 373503283,
+          "overlap": false
+        },
+        {
+          "wall_ns": 376113601,
+          "overlap": false
+        },
+        {
+          "wall_ns": 376497790,
+          "overlap": false
+        },
+        {
+          "wall_ns": 377643890,
+          "overlap": false
+        },
+        {
+          "wall_ns": 376251375,
+          "overlap": false
+        },
+        {
+          "wall_ns": 382465456,
+          "overlap": false
+        },
+        {
+          "wall_ns": 372353680,
+          "overlap": false
+        },
+        {
+          "wall_ns": 375471563,
+          "overlap": false
+        }
+      ],
+      "services_ns": [
+        373499050,
+        376110291,
+        376493320,
+        377640745,
+        376247138,
+        382462649,
+        372350923,
+        375467457
+      ],
+      "active_proofs_per_second": 2.6575418743940085,
+      "service_median_ns": 376178714.5,
+      "overlapped_waves": 0
+    },
+    {
+      "fixture": "withdrawal",
+      "block": 2,
+      "arm": "A",
+      "position": 2,
+      "p50_ns": 372007006.5,
+      "p95_ns": 395488304,
+      "process_ns": 4151147789,
+      "peak_rss_bytes": 122122240,
+      "load_start": [
+        9.25732421875,
+        16.10791015625,
+        15.037109375
+      ],
+      "load_end": [
+        9.236328125,
+        15.98974609375,
+        15.00146484375
+      ],
+      "setup_ns": 512435295,
+      "waves": [
+        {
+          "wall_ns": 372897602,
+          "overlap": false
+        },
+        {
+          "wall_ns": 367286500,
+          "overlap": false
+        },
+        {
+          "wall_ns": 372809240,
+          "overlap": false
+        },
+        {
+          "wall_ns": 371211811,
+          "overlap": false
+        },
+        {
+          "wall_ns": 369215073,
+          "overlap": false
+        },
+        {
+          "wall_ns": 370603429,
+          "overlap": false
+        },
+        {
+          "wall_ns": 395491046,
+          "overlap": false
+        },
+        {
+          "wall_ns": 387663068,
+          "overlap": false
+        }
+      ],
+      "services_ns": [
+        372892193,
+        367283410,
+        372805578,
+        371208435,
+        369212129,
+        370599472,
+        395488304,
+        387658464
+      ],
+      "active_proofs_per_second": 2.6603016564133157,
+      "service_median_ns": 372007006.5,
+      "overlapped_waves": 0
+    }
+  ]
+}
