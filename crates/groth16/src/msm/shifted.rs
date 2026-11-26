@@ -69,7 +69,7 @@ impl<'a> ShiftedBases<'a> {
 #[cfg(test)]
 mod tests {
     use ark_bn254::Fr;
-    use ark_ec::PrimeGroup;
+    use ark_ec::{PrimeGroup, VariableBaseMSM};
     use ark_ff::{BigInteger, PrimeField};
 
     use super::*;
