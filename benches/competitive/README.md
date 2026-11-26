@@ -1,0 +1,127 @@
+# Privacy Rings competitive benchmark
+
+Run the real timelock escrow and withdrawal workloads from one manifest. The
+runner verifies fixture hashes, exports shared inputs and runs one process
+at a time with alternating Xark-first and competitor-first pairs. Every
+timed batch must pass its adapter's correctness checks before the runner
+publishes CSV and JSON output.
+
+| Selection | Timed work | Verification outside timing |
+| --- | --- | --- |
+| `xark` | Native CPU resident proving and compiled row checks | Every proof accepted by Arkworks and Xark. The changed statement is rejected by both. |
+| `gnark` | Xark and Gnark resident proving with witness row checks, using the same ordered reduced relation and witness | Each prover checks its own proofs. Xark also uses Arkworks. Both arms reject the changed statement. |
+| `rapidsnark` | Xark resident proving and the Rapidsnark resident C API. The C API includes witness decoding and proof JSON serialization. | snarkjs checks the shared witness, every Rapidsnark proof and the altered statement. Xark uses its usual two verifiers. Both arms check witness rows outside timing. |
+| `constantine` | Resident synchronous CPU B1 query MSM on the exported Arkworks bundle | Both arms match the Arkworks result. Constantine must also reject a bundle with an incorrect B1 reference. |
+| `icicle` | Resident synchronous ICICLE CPU B1 and B2 query MSM, including per-call API scratch work | Both arms match the Arkworks references. ICICLE must reject incorrect reference points in separate B1 and B2 control runs. |
+
+Query bundles use the supplied proving key and a witness whose derived public
+hash matches the valid fixture statement. Xark and the competitor consume
+the same ordered points and scalars. Query negative controls test the MSM
+result. The full-proof lanes exercise cryptographic statement rejection.
+All lanes use CPU execution.
+
+## Fixture setup
+
+Use Python 3.11 or newer and a Unix host. Verify the archive checksum before
+extracting. Use a test-only directory and keep its contents private.
+
+```sh
+umask 077
+archive="$HOME/Downloads/aaa-xark-offline-fixtures.tar.gz"
+printf '%s  %s\n' 82caa7cee2b155afc2bd32cdc9661ba8cfb758888f4837bf9d6af31eb05c36a7 "$archive" |
+  shasum -a 256 -c -
+fixtures=$(mktemp -d)
+tar -xzf "$archive" -C "$fixtures"
+(cd "$fixtures" && shasum -a 256 -c SHA256SUMS)
+```
+
+The pinned application source for these fixtures is Privacy Rings examples
+`a02886da343e5f3a14d6d8a2843bdb3fd696d94e`. The earlier
+`xark-colab-proof-environment.zip`
+(`34b899e39eea1d55d8fd39779718668ca37fbe216a2a2593235bb35e50601ffc`)
+contains setup patches and the original environment script. This harness
+uses the hashed offline fixture release directly.
+
+## Build and run
+
+Build the selected adapters from clean pinned sources. Save compiler versions,
+commands, dependency locks, and library linkage receipts as
+`additional_artifacts` in the [example manifest](config.example.json).
+Manifest paths are relative to the manifest location unless absolute. The
+Xark source pin covers the benchmark example, Arkworks Cargo.lock, and the
+Gnark adapter and Go locks. The report records the checkout revisions and
+hashes of the actual executables, shared libraries and inputs. Keep the
+build receipts to associate the executable fingerprints with source builds.
+
+```sh
+cargo build --locked --release -p xark-groth16 --example bench_prove
+root=$(pwd)
+mkdir -p /path/to/bin
+(cd benches/privacy-rings-gnark &&
+  go build -mod=readonly -trimpath -o /path/to/bin/privacy-rings-gnark .)
+cp benches/competitive/config.example.json /path/to/run.json
+git -C "$root" rev-parse HEAD
+```
+
+Fill in the checkout commit, fixture root, and the paths for the lanes you
+want to run. Build [Constantine](../privacy-rings-constantine/README.md) and
+[ICICLE](../privacy-rings-icicle/README.md) with their pinned upstream
+revisions and record their compiler flags and runtime dependencies.
+Use the pinned [Rapidsnark C API source](https://github.com/iden3/rapidsnark/tree/81eddf1a536d26497b237c0b8a04fe90baf7e439)
+and build its shared `rapidsnark` target in Release mode with
+`-DUSE_ASM=ON -DUSE_OPENMP=ON -DUSE_LOGGER=OFF`. Install snarkjs 0.7.6 with an npm
+lockfile. Provide a prepared BN254 Phase 2 powers-of-tau file of power 14 or
+higher and its verified digest. snarkjs generates test keys from the
+freshly exported circuit outside the measured interval. The resident driver
+was adapted from the Xark sprint's Rapidsnark comparison.
+
+A Linux VM with two online vCPUs gives every engine the default two-thread
+budget. Rapidsnark's worker pool also reads the host CPU count, so CPU
+affinity alone is insufficient to qualify that lane. For other lanes, use
+the same CPU affinity for the whole process tree when available and record
+whether the chosen cores share a physical core.
+
+```sh
+# Run all lanes with the default four pairs, 30 samples and three warmups per arm.
+python3 benches/competitive/run.py --config /path/to/run.json \
+  --output /path/to/results --strict-contention
+
+# Xark and Arkworks proof-only smoke on both fixtures.
+python3 benches/competitive/run.py --config /path/to/run.json \
+  --output /path/to/native-smoke --competitor xark --pairs 2 --samples 3 --warmups 1
+```
+
+Repeat `--competitor` to select a subset or use `--workload` to select one
+fixture. Each pair runs after the previous process exits. At least two
+pairs are required so both orders appear. Opposite workloads start with
+opposite orders. The standalone `xark` lane repeats the native proof
+measurement. Select `xark-query` to run both native queries against
+Arkworks without installing an external MSM engine.
+
+## Read the output
+
+- `samples.csv` contains every accepted sample in nanoseconds, including
+  fixture, lane, pair, process position, engine and metric. Xark and
+  Rapidsnark proof receipts report microsecond precision.
+- `report.json` contains p50, nearest-rank p95 and p99, per-pair medians,
+  timing boundaries, executable and input fingerprints, CPU topology,
+  affinity, worker configuration, process observations and raw log paths.
+  Tails from small batches often select the maximum, so use the sample
+  counts when interpreting them.
+- The runner samples external process CPU use about once a second and
+  records host load before and after each arm. This is a coarse indicator
+  of overlap. Short activity, kernel scheduling and other VM tenants can
+  escape detection. Flagged pairs retain raw samples and have no ratio.
+  `--strict-contention` also fails when process monitoring is unavailable.
+- Ratio fields are competitor over Xark for each eligible pair and
+  operation. The Rapidsnark comparison retains both medians but omits
+  ratios because its ABI boundary differs. There is no overall ranking.
+- Raw logs, derived inputs and any test keys are kept under the private
+  result root. A failed run leaves diagnostic logs and no verified JSON.
+  Share reviewed report and CSV files separately from the result directory.
+
+Run receipt contract tests with
+`python3 -m unittest discover -s benches/competitive -v`. Set
+`XARK_ARCHIVED_RECEIPTS` to the sprint's `evidence/benchmark-lab` directory
+to test archived Gnark, Rapidsnark, Constantine and ICICLE receipts. This
+exercises parsing of previously recorded samples.

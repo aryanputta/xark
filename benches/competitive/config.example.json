@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "fixtures": "/path/to/extracted/offline-fixtures",
+  "sources": {
+    "xark": {
+      "path": "/path/to/xark",
+      "commit": "REPLACE_WITH_FULL_CHECKOUT_COMMIT"
+    },
+    "rapidsnark": {
+      "path": "/path/to/rapidsnark",
+      "commit": "81eddf1a536d26497b237c0b8a04fe90baf7e439"
+    },
+    "constantine": {
+      "path": "/path/to/constantine",
+      "commit": "4083170f19ec8dba15604bf0d443b5d852d634d6"
+    },
+    "icicle": {
+      "path": "/path/to/icicle",
+      "commit": "6c77775961b0e4dc2be359feec1ac11536c18043"
+    }
+  },
+  "binaries": {
+    "bench": "/path/to/xark/target/release/examples/bench_prove",
+    "gnark": "/path/to/bin/privacy-rings-gnark",
+    "rapidsnark_library": "/path/to/rapidsnark/build/src/librapidsnark.so",
+    "node": "/path/to/bin/node",
+    "constantine": "/path/to/bin/constantine-b1",
+    "icicle": "/path/to/bin/icicle-query-msm",
+    "icicle_curve_bn254": "/path/to/icicle/lib/libicicle_curve_bn254.so",
+    "icicle_field_bn254": "/path/to/icicle/lib/libicicle_field_bn254.so",
+    "icicle_hash": "/path/to/icicle/lib/libicicle_hash.so",
+    "icicle_device": "/path/to/icicle/lib/libicicle_device.so"
+  },
+  "snarkjs": "/path/to/node_modules/snarkjs",
+  "rapidsnark_ptau": {
+    "path": "/path/to/prepared-bn254.ptau",
+    "sha256": "REPLACE_WITH_VERIFIED_PTAU_SHA256"
+  },
+  "additional_artifacts": {}
+}
