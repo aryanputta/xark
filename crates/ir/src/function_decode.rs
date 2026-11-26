@@ -2114,8 +2114,9 @@ fn solve_streamed(
 
 fn bn254_witness_slots(w: eval::Witness) -> Vec<Option<crate::solver::Fp>> {
     w.vals
-        .into_iter()
-        .zip(w.set)
+        .iter()
+        .copied()
+        .zip(w.set.iter().copied())
         .map(|(v, set)| set.then_some(crate::solver::Fp::Bn254(v)))
         .collect()
 }
@@ -3151,6 +3152,13 @@ mod eval {
     pub struct Witness {
         pub vals: Vec<Fr>,
         pub set: Vec<bool>,
+    }
+
+    impl Drop for Witness {
+        fn drop(&mut self) {
+            use zeroize::Zeroize;
+            self.vals.zeroize();
+        }
     }
 
     impl Witness {
