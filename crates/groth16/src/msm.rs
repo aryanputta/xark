@@ -405,6 +405,7 @@ fn pippenger<G: SwCurve>(
     scalars: &[Scalar],
     entries: &[u32],
     bits: usize,
+    endomorphism: &(impl Fn(usize, &G::Affine) -> G::Affine + Sync),
 ) -> G {
     // Fewer windows also means fewer tasks, and twice the points larger bucket
     // sweeps: measured (`examples/bench_msm.rs`), the split is 4–19% faster up
@@ -435,7 +436,7 @@ fn pippenger<G: SwCurve>(
                 }
                 let ((s1, k1), (s2, k2)) = glv.decompose(&s);
                 let b = bases[i];
-                let phi = G::endo(&b);
+                let phi = endomorphism(i, &b);
                 p[2 * j] = if s1 { b } else { -b };
                 p[2 * j + 1] = if s2 { phi } else { -phi };
                 k[2 * j] = k1;
@@ -600,6 +601,14 @@ const CLASS_BITS: [usize; 6] = [1, 16, 32, 64, 128, 256];
 /// `Σ sᵢ·Pᵢ` over the first `min(bases.len(), scalars.len())` pairs. Scalars are
 /// arbitrary 256-bit integers (values ≥ r are handled, e.g. `r·P = O`).
 pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
+    msm_with_endomorphism::<G>(bases, scalars, &|_, base| G::endo(base))
+}
+
+fn msm_with_endomorphism<G: SwCurve>(
+    bases: &[G::Affine],
+    scalars: &[Scalar],
+    endomorphism: &(impl Fn(usize, &G::Affine) -> G::Affine + Sync),
+) -> G {
     let n = bases.len().min(scalars.len());
     let (bases, scalars) = (&bases[..n], &scalars[..n]);
     assert!(n < NEG as usize, "MSM chunk too large");
@@ -678,15 +687,87 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
         .sum();
     let mut total = unit;
     for (class, entries) in classes.iter().enumerate().skip(1) {
-        total += pippenger::<G>(bases, scalars, entries, CLASS_BITS[class]);
+        total += pippenger::<G>(bases, scalars, entries, CLASS_BITS[class], endomorphism);
     }
     total
+}
+
+/// Experimental immutable cache of G2 endomorphism x-coordinates for one
+/// borrowed fixed-base query. Both point selection and scalar work stay in MSM.
+#[cfg(feature = "g2-endo-bench")]
+pub struct PreparedG2<'a> {
+    bases: &'a [ark_bn254::G2Affine],
+    endomorphism_x: Box<[ark_bn254::Fq2]>,
+}
+
+#[cfg(feature = "g2-endo-bench")]
+impl<'a> PreparedG2<'a> {
+    const MAX_PAYLOAD_BYTES: usize = 512 * 1024;
+
+    pub fn new(bases: &'a [ark_bn254::G2Affine]) -> Option<Self> {
+        if bases.is_empty()
+            || bases.len() > Self::MAX_PAYLOAD_BYTES / std::mem::size_of::<ark_bn254::Fq2>()
+        {
+            return None;
+        }
+        let endomorphism_x = bases
+            .iter()
+            .map(|base| ark_bn254::G2Projective::endo(base).x)
+            .collect();
+        Some(Self {
+            bases,
+            endomorphism_x,
+        })
+    }
+
+    pub fn payload_bytes(&self) -> usize {
+        std::mem::size_of_val(&*self.endomorphism_x)
+    }
+
+    pub fn msm(&self, scalars: &[Scalar]) -> ark_bn254::G2Projective {
+        msm_with_endomorphism::<ark_bn254::G2Projective>(self.bases, scalars, &|i, base| {
+            // BN254 G2's endomorphism leaves y unchanged.
+            let mut transformed = *base;
+            transformed.x = self.endomorphism_x[i];
+            transformed
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ark_ff::Zero;
+
+    #[cfg(feature = "g2-endo-bench")]
+    #[test]
+    fn prepared_g2_reuses_points_across_mixed_width_witnesses() {
+        use ark_bn254::{G2Affine, G2Projective};
+        use ark_ec::{AffineRepr, VariableBaseMSM};
+
+        let generator = G2Affine::generator();
+        let bases = [
+            generator,
+            generator.mul_bigint([5]).into_affine(),
+            G2Affine::identity(),
+            generator.mul_bigint([9]).into_affine(),
+            generator.mul_bigint([11]).into_affine(),
+        ];
+        let prepared = PreparedG2::new(&bases).unwrap();
+        let wide = Fr::from(2u64).pow([200]);
+        for values in [
+            [wide, Fr::from(3u64), wide, -Fr::one(), Fr::zero()],
+            [Fr::zero(), wide, wide, Fr::one(), Fr::from(17u64)],
+        ] {
+            let scalars = values.map(|value| value.into_bigint());
+            let oracle = G2Projective::msm_bigint(&bases, &scalars);
+            assert_eq!(prepared.msm(&scalars), oracle);
+            assert_eq!(msm::<G2Projective>(&bases, &scalars), oracle);
+        }
+        assert_eq!(prepared.payload_bytes(), 5 * size_of::<ark_bn254::Fq2>());
+        assert!(PreparedG2::new(&[]).is_none());
+        assert!(PreparedG2::new(&vec![G2Affine::identity(); 8193]).is_none());
+    }
 
     #[test]
     fn booth_digits_reconstruct_scalar() {

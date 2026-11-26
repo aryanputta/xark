@@ -10,6 +10,13 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 
+[features]
+g2-endo-bench = []
+
+[[example]]
+name = "bench_b2_prepared"
+required-features = ["g2-endo-bench"]
+
 [dependencies]
 # Kept explicit for default-features = false; bump on release.
 xark-ir = { path = "../ir", version = "0.5.0", default-features = false }
