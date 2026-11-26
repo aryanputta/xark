@@ -94,9 +94,15 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("setup: %w", err)
 	}
+	receiptPath := os.Getenv("GNARK_PROOF_RECEIPT")
+	var warmupProofs []groth16.Proof
 	for i := 0; i < numbers[2]; i++ {
-		if _, err := groth16.Prove(ccs, pk, w); err != nil {
+		proof, err := groth16.Prove(ccs, pk, w)
+		if err != nil {
 			return fmt.Errorf("warm up: %w", err)
+		}
+		if receiptPath != "" {
+			warmupProofs = append(warmupProofs, proof)
 		}
 	}
 	timings := make([]time.Duration, numbers[1])
@@ -117,6 +123,16 @@ func run(args []string) error {
 	}
 	if err := groth16.Verify(proofs[0], vk, invalid); err == nil {
 		return fmt.Errorf("Gnark accepted the changed statement")
+	}
+	if receiptPath != "" {
+		for i, proof := range warmupProofs {
+			if err := groth16.Verify(proof, vk, public); err != nil {
+				return fmt.Errorf("verify warmup %d: %w", i+1, err)
+			}
+		}
+		if err := writeProofReceipt(receiptPath, vk, append(warmupProofs, proofs...)); err != nil {
+			return fmt.Errorf("write independent verification input: %w", err)
+		}
 	}
 
 	fmt.Printf("verified constraints=%d wires=%d threads=%d\n",
