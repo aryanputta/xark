@@ -58,6 +58,9 @@
 //! fixture against exact division before timing.
 //! In `warm`, `BENCH_G2_CACHED_GLS=1` uses that fixed-limb path for complete
 //! split resident CPU proofs with `--features msm-g2-shifted-bench`.
+//! Use `check-g2-subgroup PROVING_KEY PAIRS` to compare public-key validation
+//! algorithms. `BENCH_G2_SIGNED_SUBGROUP=1` selects signed validation in cached
+//! GLS warm proofs, including all on-curve and subgroup checks.
 //! `BENCH_SHARED_B_SCALARS=1` with `msm-b-shared-bench` shares a canonical
 //! scalar vector across the two unchunked B queries for one CPU proof.
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
@@ -462,6 +465,18 @@ fn main() {
         "BENCH_G2_SPARSE_ENDOMORPHISM requires the msm-g2-endpoint-bench feature"
     );
     let mode = args[1].as_str();
+    let signed_subgroup = match std::env::var("BENCH_G2_SIGNED_SUBGROUP").as_deref() {
+        Ok("0") | Err(std::env::VarError::NotPresent) => false,
+        Ok("1") => true,
+        _ => panic!("BENCH_G2_SIGNED_SUBGROUP must be 0 or 1"),
+    };
+    assert!(
+        !signed_subgroup
+            || (cfg!(feature = "msm-g2-shifted-bench")
+                && mode == "warm"
+                && std::env::var("BENCH_G2_CACHED_GLS").as_deref() == Ok("1")),
+        "signed subgroup validation requires cached GLS warm mode"
+    );
     let share_b_scalars = match std::env::var("BENCH_SHARED_B_SCALARS").as_deref() {
         Err(std::env::VarError::NotPresent) => false,
         Ok(value @ ("0" | "1")) if cfg!(feature = "msm-b-shared-bench") && mode == "warm" => {
@@ -475,6 +490,10 @@ fn main() {
         "BENCH_G2_CACHED_GLS requires warm mode and the msm-g2-shifted-bench feature"
     );
     match mode {
+        "check-g2-subgroup" => {
+            query_msm::cached_gls_b2::run_subgroup_pairs(&args[2..]);
+            return;
+        }
         "query-msm" | "query-msm-xark" => {
             query_msm::run(&args[2..], mode == "query-msm-xark");
             return;
@@ -728,14 +747,18 @@ fn main() {
                     "cached GLS B2 needs fixture statements"
                 );
                 let started = Instant::now();
-                let table = query_msm::cached_gls_b2::ResidentCachedGls::new(&pk.b_g2_query)
-                    .expect("validate and prepare cached GLS B2 table");
+                let table = query_msm::cached_gls_b2::ResidentCachedGls::new(
+                    &pk.b_g2_query,
+                    signed_subgroup,
+                )
+                .expect("validate and prepare cached GLS B2 table");
                 eprintln!(
                     "bench g2 cached GLS: 1 rounding=fixed-limb subgroup_points={} setup_ns={} table_payload_bytes={}",
                     pk.b_g2_query.len(),
                     started.elapsed().as_nanos(),
                     table.payload_bytes()
                 );
+                eprintln!("bench g2 signed subgroup: {}", u8::from(signed_subgroup));
                 Some(table)
             }
             Ok("0") | Err(std::env::VarError::NotPresent) => None,

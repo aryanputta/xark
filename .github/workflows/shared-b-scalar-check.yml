@@ -2,7 +2,7 @@ name: Shared B scalar Linux correctness
 
 on:
   push:
-    branches: [perf/request-local-b-scalars]
+    branches: [perf/request-local-b-scalars, perf/g2-public-validation]
 
 permissions:
   contents: read
@@ -24,6 +24,7 @@ jobs:
         run: |
           features=msm-b-shared-bench,msm-g2-shifted-bench,msm-g2-endpoint-bench
           cargo test --locked --profile ci -p xark-groth16 --features "$features" --test prover
+          cargo test --locked --profile ci -p xark-groth16 --features "$features" --example bench_prove
           cargo clippy --locked -p xark-groth16 --features "$features" --test prover --example bench_prove -- -D warnings
       - name: Check normal feature configuration
         run: cargo check --locked -p xark-groth16 --example bench_prove
