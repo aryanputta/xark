@@ -23,6 +23,10 @@ class VerifiedSampleTests(unittest.TestCase):
         self.assertEqual(
             list(arm_orders(candidate, baseline, PROFILES)), [first, first[::-1]]
         )
+        self.assertEqual(
+            list(arm_orders(candidate, baseline, PROFILES, pairs=6)),
+            [first, first[::-1]] * 3,
+        )
 
     def test_scheduling_rotates_profiles_with_a_single_binary(self):
         binary = Path("bench_prove")

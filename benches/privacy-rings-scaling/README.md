@@ -27,6 +27,8 @@ In this comparison, `warm_batch_ms` measures from the start of a preloaded batch
 
 To compare two release builds, pass the candidate as the first argument and the baseline as `--against`. The runner uses two Rayon threads for one proof at a time, then reverses binary order for the second pair. Both binaries are fingerprinted before and after the run. Use the same binary for both arguments to measure host variation before interpreting an A/B.
 
+Use an even `--pairs` value above two to alternate binary order across more pairs. Shorter arms keep the two measurements of each pair closer in time. Each arm still pays its own startup and warmups, so use the individual proof samples to compare warm latency and report verified makespan separately.
+
 ```sh
 python3 benches/privacy-rings-scaling/run.py \
   /path/to/candidate/bench_prove /path/to/pinned-fixtures /path/to/new-output \

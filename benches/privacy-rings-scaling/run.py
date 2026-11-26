@@ -169,14 +169,14 @@ def run_arm(binary, fixture, destination, profile, samples, shared_study):
     return metrics
 
 
-def arm_orders(binary, baseline, profiles):
+def arm_orders(binary, baseline, profiles, pairs=2):
     if baseline is not None:
         pair = [
             (TWO_WORKERS, "baseline", baseline),
             (TWO_WORKERS, "candidate", binary),
         ]
-        yield pair
-        yield pair[::-1]
+        for index in range(pairs):
+            yield pair if index % 2 == 0 else pair[::-1]
         return
     for rotation in range(len(profiles)):
         order = profiles[rotation:] + profiles[:rotation]
@@ -190,6 +190,9 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument(
         "--against", type=Path, help="baseline binary for a reversed-order A/B"
+    )
+    parser.add_argument(
+        "--pairs", type=int, help="even number of matched A/B pairs (default: 2)"
     )
     parser.add_argument("--fixture", choices=WORKLOADS, help="run one pinned fixture")
     parser.add_argument(
@@ -205,6 +208,11 @@ def main():
         parser.error("--samples must be an even integer of at least two")
     if args.against is not None and args.shared_resident:
         parser.error("--against uses serial proofs with two Rayon threads")
+    if args.pairs is not None:
+        if args.against is None:
+            parser.error("--pairs requires --against")
+        if args.pairs < 2 or args.pairs % 2:
+            parser.error("--pairs must be an even integer of at least two")
     if platform.system() not in {"Darwin", "Linux"}:
         parser.error("run on Linux or macOS")
     binary, fixtures = args.binary.resolve(), args.fixtures.resolve()
@@ -235,7 +243,9 @@ def main():
     )
     rows = []
     profiles = SHARED_PROFILES if args.shared_resident else PROFILES
-    for rotation, order in enumerate(arm_orders(binary, baseline, profiles), 1):
+    for rotation, order in enumerate(
+        arm_orders(binary, baseline, profiles, pairs=args.pairs or 2), 1
+    ):
         fixture_order = workloads if rotation % 2 else workloads[::-1]
         for workload in fixture_order:
             for position, (profile, variant, executable) in enumerate(order, 1):
