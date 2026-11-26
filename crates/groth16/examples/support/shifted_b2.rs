@@ -10,8 +10,19 @@ use ark_ff::{AdditiveGroup, BigInt};
 use rayon::prelude::*;
 use xark_groth16::msm::{self, Scalar};
 
+#[path = "shifted_frobenius.rs"]
+mod frobenius;
+
 const CHUNK_BITS: usize = 128;
 const TABLE_CAP_BYTES: usize = 3 * 1024 * 1024;
+
+fn double_shift(base: &G2Affine) -> G2Projective {
+    let mut point = G2Projective::from(*base);
+    for _ in 0..CHUNK_BITS {
+        point.double_in_place();
+    }
+    point
+}
 
 struct ShiftedBases {
     terms: usize,
@@ -27,18 +38,15 @@ impl ShiftedBases {
     }
 
     fn new(bases: &[G2Affine]) -> Result<Self, &'static str> {
+        Self::new_with(bases, double_shift)
+    }
+
+    fn new_with(
+        bases: &[G2Affine],
+        shift: impl Fn(&G2Affine) -> G2Projective + Send + Sync,
+    ) -> Result<Self, &'static str> {
         let count = Self::point_count(bases.len())?;
-        let shifted: Vec<_> = bases
-            .par_iter()
-            .with_min_len(32)
-            .map(|&base| {
-                let mut point = G2Projective::from(base);
-                for _ in 0..CHUNK_BITS {
-                    point.double_in_place();
-                }
-                point
-            })
-            .collect();
+        let shifted: Vec<_> = bases.par_iter().with_min_len(32).map(shift).collect();
         let mut points = Vec::with_capacity(count);
         points.extend_from_slice(bases);
         points.extend(G2Projective::normalize_batch(&shifted));
@@ -119,6 +127,76 @@ pub(crate) fn run(args: &[String]) {
             index + 1,
             baseline.as_nanos(),
             shifted.as_nanos(),
+        );
+    }
+}
+
+pub(crate) fn run_frobenius_setup(args: &[String]) {
+    let [xbc_path, pk_path, directory, options @ ..] = args else {
+        panic!(
+            "usage: bench_prove query-msm-b2-shifted-frobenius <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]"
+        );
+    };
+    let (samples, warmups) = super::counts(options).unwrap_or_else(|reason| panic!("{reason}"));
+    assert!(
+        !super::super::tracking(),
+        "set BENCH_TIME=1 to time shifted table setup"
+    );
+    let (pk, scalars) = super::load(xbc_path, pk_path, Path::new(directory));
+    let bases = &pk.b_g2_query;
+    if let Err(index) = frobenius::check_subgroup(bases) {
+        panic!("B2 base {index} is outside the BN254 G2 subgroup");
+    }
+    let expected = G2Projective::msm_bigint(bases, &scalars);
+    let double = || super::timed(|| ShiftedBases::new(bases).expect("prepare doubling table"));
+    let frobenius = || {
+        super::timed(|| {
+            ShiftedBases::new_with(bases, frobenius::shift_subgroup_point)
+                .expect("prepare Frobenius table")
+        })
+    };
+    let mut timings = Vec::with_capacity(samples);
+    for iteration in 0..(warmups + samples) {
+        let double_first = iteration % 2 == 0;
+        let ((reference, double_time), (candidate, frobenius_time)) = if double_first {
+            (double(), frobenius())
+        } else {
+            let candidate = frobenius();
+            (double(), candidate)
+        };
+        assert_eq!(reference.points.len(), candidate.points.len());
+        for (index, (a, b)) in reference.points.iter().zip(&candidate.points).enumerate() {
+            assert_eq!(a, b, "shifted B2 table differs at slot {index}");
+        }
+        for (arm, table) in [("doubling", reference), ("Frobenius", candidate)] {
+            assert!(
+                msm::same_point(&table.msm(&scalars), &expected),
+                "{arm} table B2 query disagrees with Arkworks"
+            );
+        }
+        if iteration >= warmups {
+            timings.push((double_first, double_time, frobenius_time));
+        }
+    }
+    let table_bytes = 2 * bases.len() * size_of::<G2Affine>();
+    println!(
+        "query msm B2 Frobenius setup verified: terms={} threads={} samples={samples} warmups={warmups} subgroup_points={} prepared_points_per_arm={} table_payload_bytes={table_bytes} table_cap_bytes={TABLE_CAP_BYTES}",
+        bases.len(),
+        rayon::current_num_threads(),
+        bases.len(),
+        bases.len(),
+    );
+    for (index, (double_first, double_time, frobenius_time)) in timings.into_iter().enumerate() {
+        let first = if double_first {
+            "doubling"
+        } else {
+            "frobenius"
+        };
+        println!(
+            "query msm B2 Frobenius setup: sample={} first={first} doubling_ns={} frobenius_ns={}",
+            index + 1,
+            double_time.as_nanos(),
+            frobenius_time.as_nanos(),
         );
     }
 }
