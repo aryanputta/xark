@@ -46,6 +46,9 @@
 //! outputs against Arkworks. The 3 MiB table cap covers its retained affine
 //! payload. Warm timings include scalar splitting and allocation. The ordinary
 //! B2 baseline already uses a GLV split for eligible full-width scalars.
+//! Build with `--features msm-g2-shifted-bench`. In `warm`, set
+//! `BENCH_G2_SHIFTED=1 BENCH_WARM_BACKEND=cpu` with fixture statements to
+//! measure the same shifted operation in a complete resident CPU proof.
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
 //! Arkworks reference sums for a same-input benchmark. Use reproducible test
 //! fixtures and keep the witness-bearing export in local scratch storage.
@@ -209,11 +212,20 @@ impl Probe for Phases {
     }
 }
 
-struct TimedProof<'a>(&'a xark_groth16::prover::ResidentTimingSink<'a>);
+struct ResidentProofProbe<'a> {
+    timings: Option<&'a xark_groth16::prover::ResidentTimingSink<'a>>,
+    #[cfg(feature = "msm-g2-shifted-bench")]
+    shifted: Option<&'a xark_groth16::msm::shifted::ShiftedBases<'a>>,
+}
 
-impl Probe for TimedProof<'_> {
+impl Probe for ResidentProofProbe<'_> {
     fn resident_timings(&self) -> Option<&xark_groth16::prover::ResidentTimingSink<'_>> {
-        Some(self.0)
+        self.timings
+    }
+
+    #[cfg(feature = "msm-g2-shifted-bench")]
+    fn shifted_g2(&self) -> Option<&xark_groth16::msm::shifted::ShiftedBases<'_>> {
+        self.shifted
     }
 }
 
@@ -225,7 +237,9 @@ struct TaskSpan {
 
 struct ProfiledCpu<'a, P> {
     cpu: Cpu<P>,
-    profiles: &'a mut Vec<Vec<TaskSpan>>,
+    profiles: Option<&'a mut Vec<Vec<TaskSpan>>>,
+    #[cfg(feature = "msm-g2-shifted-bench")]
+    shifted: Option<&'a xark_groth16::msm::shifted::ShiftedBases<'a>>,
 }
 
 impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
@@ -240,6 +254,21 @@ impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
         r: Fr,
         s: Fr,
     ) -> Result<xark_groth16::Proof<Bn254>, xark_groth16::ProveError> {
+        let Some(profiles) = self.profiles.as_deref_mut() else {
+            return xark_groth16::prove_with_randomness(
+                src,
+                z,
+                &mut self.cpu.pk,
+                r,
+                s,
+                &self.cpu.cfg,
+                &mut ResidentProofProbe {
+                    timings: None,
+                    #[cfg(feature = "msm-g2-shifted-bench")]
+                    shifted: self.shifted,
+                },
+            );
+        };
         let spans = Mutex::new(Vec::new());
         let origin = Instant::now();
         let record = |phase, started: Instant, elapsed| {
@@ -256,11 +285,15 @@ impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
             r,
             s,
             &self.cpu.cfg,
-            &mut TimedProof(&record),
+            &mut ResidentProofProbe {
+                timings: Some(&record),
+                #[cfg(feature = "msm-g2-shifted-bench")]
+                shifted: self.shifted,
+            },
         )?;
         let mut spans = spans.into_inner().unwrap();
         spans.sort_unstable_by_key(|event| event.offset);
-        self.profiles.push(spans);
+        profiles.push(spans);
         Ok(proof)
     }
 }
@@ -397,6 +430,7 @@ fn main() {
             query_msm::run(&args[2..], mode == "query-msm-xark");
             return;
         }
+        #[cfg(feature = "msm-g2-shifted-bench")]
         "query-msm-b2-shifted" => {
             query_msm::shifted_b2::run(&args[2..]);
             return;
@@ -589,6 +623,41 @@ fn main() {
             );
         }
         let mut profiles = Vec::new();
+        eprintln!(
+            "resident CPU: a_query_len={} merge_below={} merged={}",
+            pk.a_query.len(),
+            cfg.merge_below,
+            pk.a_query.len() < cfg.merge_below
+        );
+        #[cfg(feature = "msm-g2-shifted-bench")]
+        let shifted = match std::env::var("BENCH_G2_SHIFTED").as_deref() {
+            Ok("1") => {
+                assert_eq!(std::env::var("BENCH_WARM_BACKEND").as_deref(), Ok("cpu"));
+                assert!(
+                    pk.a_query.len() >= cfg.merge_below,
+                    "shifted B2 uses split MSMs"
+                );
+                assert!(
+                    changed_public_hash.is_some(),
+                    "shifted B2 needs fixture statements"
+                );
+                let start = Instant::now();
+                let table = xark_groth16::msm::shifted::ShiftedBases::new(&pk.b_g2_query)
+                    .expect("prepare shifted B2 table");
+                eprintln!(
+                    "bench g2 shifted: 1 setup_ns={} table_payload_bytes={}",
+                    start.elapsed().as_nanos(),
+                    table.payload_bytes(),
+                );
+                Some(table)
+            }
+            Ok("0") | Err(std::env::VarError::NotPresent) => None,
+            _ => panic!("BENCH_G2_SHIFTED must be 0 or 1"),
+        };
+        #[cfg(feature = "msm-g2-shifted-bench")]
+        let use_probe = profile || shifted.is_some();
+        #[cfg(not(feature = "msm-g2-shifted-bench"))]
+        let use_probe = profile;
         let mut provers: Vec<Box<dyn Prover + '_>> = Vec::new();
         match std::env::var("BENCH_WARM_BACKEND").as_deref() {
             Ok("both") | Err(std::env::VarError::NotPresent) => {
@@ -597,17 +666,13 @@ fn main() {
             Ok("cpu") => {}
             _ => panic!("BENCH_WARM_BACKEND must be both or cpu"),
         }
-        eprintln!(
-            "resident CPU: a_query_len={} merge_below={} merged={}",
-            pk.a_query.len(),
-            cfg.merge_below,
-            pk.a_query.len() < cfg.merge_below
-        );
         let cpu = Cpu::new(xark_groth16::InMemoryPk::new(&pk), cfg);
-        if profile {
+        if use_probe {
             provers.push(Box::new(ProfiledCpu {
                 cpu,
-                profiles: &mut profiles,
+                profiles: profile.then_some(&mut profiles),
+                #[cfg(feature = "msm-g2-shifted-bench")]
+                shifted: shifted.as_ref(),
             }));
         } else {
             provers.push(Box::new(cpu));

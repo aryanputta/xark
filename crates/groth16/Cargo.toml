@@ -12,6 +12,7 @@ rust-version.workspace = true
 
 [features]
 msm-g2-endpoint-bench = []
+msm-g2-shifted-bench = []
 
 [dependencies]
 # Kept explicit for default-features = false; bump on release.
