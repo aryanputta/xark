@@ -24,6 +24,29 @@ fn arkworks_encoding<A: CanonicalSerialize, B: CanonicalDeserialize>(value: &A) 
     B::deserialize_compressed(bytes.as_slice()).expect("validate Arkworks encoding")
 }
 
+// Match the compiled check in the candidate's timed warm loop. The 0.5
+// diagnostic first_unsatisfied helper expands rows instead.
+fn first_unsatisfied_compiled(src: &BytecodeSource, z: &[Fr]) -> Option<usize> {
+    let layout = src.layout();
+    let value = |id| z[layout.position(id).expect("unallocated row variable")];
+    for window in src.windows(1 << 14) {
+        let mut row = window.rows.start;
+        let mut first = None;
+        src.stream()
+            .eval_items(window.handle, &value, [true; 3], &mut |[a, b, c]| {
+                if first.is_none() && a * b != c {
+                    first = Some(row);
+                }
+                row += 1;
+            });
+        debug_assert_eq!(row, window.rows.end);
+        if first.is_some() {
+            return first;
+        }
+    }
+    None
+}
+
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let [mode, circuit, key, inputs, samples, warmups] = args.as_slice() else {
@@ -63,6 +86,7 @@ fn main() {
     };
     let src = BytecodeSource::new(&xbc).expect("open compiled rows");
     let z = src.layout().assignment_from_map(&assignment);
+    assert!(z.len() == src.layout().num_vars() && z[0] == Fr::from(1u64));
     let public = &z[1..src.layout().num_instance()];
     let valid = statement(Path::new(&statements), "public.json");
     let changed = statement(Path::new(&statements), "public-changed.json");
@@ -93,7 +117,7 @@ fn main() {
             let t = Instant::now();
             if check_rows {
                 assert!(
-                    xark_groth16::first_unsatisfied(&src, &z).is_none(),
+                    first_unsatisfied_compiled(&src, &z).is_none(),
                     "constraint check failed"
                 );
             }
