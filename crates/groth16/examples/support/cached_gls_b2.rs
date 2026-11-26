@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use ark_bn254::{Config, Fr, G2Affine, G2Projective, g2};
 use ark_ec::{AffineRepr, VariableBaseMSM, bn::BnConfig, scalar_mul::glv::GLVConfig};
-use ark_ff::{AdditiveGroup, BigInt as ArkBigInt, BigInteger, Field, PrimeField};
+use ark_ff::{AdditiveGroup, BigInt as ArkBigInt, BigInteger, Field, PrimeField, Zero};
 use num_bigint::{BigInt, Sign};
 use rayon::prelude::*;
 use xark_groth16::msm::{self, Scalar};
@@ -344,6 +344,13 @@ pub(crate) fn run_subgroup_pairs(args: &[String]) {
     let key = xark_backend::Groth16Keys::read_proving_key(Path::new(key)).expect("load key");
     let bases = &key.b_g2_query;
     assert!(!bases.is_empty(), "empty B2 key");
+    assert!(
+        bases
+            .par_iter()
+            .all(|p| p.is_on_curve() && p.mul_bigint(Fr::MODULUS).is_zero()),
+        "independent full-order reference rejected the B2 key"
+    );
+    println!("G2 full-order reference verified points={}", bases.len());
     println!(
         "G2 validation points={} threads={}",
         bases.len(),
@@ -627,7 +634,6 @@ mod tests {
 
     #[test]
     fn signed_public_scalar_and_predicate_match_independent_group_checks() {
-        use ark_ff::Zero;
         let reconstructed = CHECK_DIGITS.iter().rev().fold(0u128, |n, &digit| {
             (2 * n).checked_add_signed(i128::from(digit)).unwrap()
         });
