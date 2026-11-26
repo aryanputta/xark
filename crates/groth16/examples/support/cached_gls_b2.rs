@@ -11,6 +11,7 @@ use ark_ff::{AdditiveGroup, BigInt as ArkBigInt, BigInteger, Field, PrimeField, 
 use num_bigint::{BigInt, Sign};
 use rayon::prelude::*;
 use xark_groth16::msm::{self, Scalar};
+use zeroize::Zeroizing;
 
 const IMAGES: usize = 4;
 const TABLE_CAP_BYTES: usize = 4 * 1024 * 1024;
@@ -281,22 +282,26 @@ impl CachedImages {
         })
     }
 
-    fn recode<const FIXED: bool>(&self, recoder: &Recoder, scalars: &[Scalar]) -> Vec<Scalar> {
+    fn recode<const FIXED: bool>(
+        &self,
+        recoder: &Recoder,
+        scalars: &[Scalar],
+    ) -> Zeroizing<Vec<Scalar>> {
         assert_eq!(self.points.len() / IMAGES, scalars.len());
-        let parts: Vec<_> = self
-            .points
-            .par_chunks_exact(IMAGES)
-            .zip(scalars.par_iter())
+        // Put the backing allocation under the wipe guard before copying any
+        // witness-derived values into it, including during Rayon unwinding.
+        let mut parts = Zeroizing::new(vec![Scalar::default(); self.points.len()]);
+        parts
+            .par_chunks_exact_mut(IMAGES)
+            .zip(self.points.par_chunks_exact(IMAGES))
+            .zip(scalars)
             .with_min_len(128)
-            .map(|(images, scalar)| {
-                if images[0].is_zero() {
-                    [Scalar::default(); IMAGES]
-                } else {
-                    recoder.encode::<FIXED>(scalar)
+            .for_each(|((out, images), scalar)| {
+                if !images[0].is_zero() {
+                    out.copy_from_slice(&recoder.encode::<FIXED>(scalar));
                 }
-            })
-            .collect();
-        parts.into_flattened()
+            });
+        parts
     }
 }
 
@@ -416,7 +421,8 @@ pub(crate) fn run<const FIXED: bool>(args: &[String]) {
         super::timed(|| CachedImages::new(bases).expect("prepare signed GLS bases"));
     if FIXED {
         assert!(
-            cache.recode::<false>(&recoder, &scalars) == cache.recode::<true>(&recoder, &scalars),
+            cache.recode::<false>(&recoder, &scalars).as_slice()
+                == cache.recode::<true>(&recoder, &scalars).as_slice(),
             "fixed-width and division recodings differ on the fixture"
         );
     }
