@@ -140,6 +140,12 @@ pub type BenchResidentB2<'a> = dyn Fn(&[G2Affine], &[Scalar]) -> G2Projective + 
 pub trait Probe {
     fn mark(&mut self, _phase: &'static str) {}
 
+    /// Benchmark-only B1 task insertion order. No arithmetic or proof data changes.
+    #[cfg(feature = "msm-b1-spawn-bench")]
+    fn b1_spawn_first(&self) -> bool {
+        false
+    }
+
     /// Receive wall-clock spans for split resident CPU tasks. Spans may overlap.
     fn resident_timings(&self) -> Option<&ResidentTimingSink<'_>> {
         None
@@ -679,8 +685,10 @@ where
         let b_scalars = shared_b_scalars.as_ref().map(|scalars| scalars.as_slice());
         #[cfg(not(feature = "msm-b-shared-bench"))]
         let b_scalars: Option<&[Scalar]> = None;
+        #[cfg(feature = "msm-b1-spawn-bench")]
+        let b1_first = probe.b1_spawn_first();
         rayon::scope(|sc| {
-            sc.spawn(|_| {
+            let h_job = |_: &rayon::Scope<'_>| {
                 h = Some(
                     time_resident(timings, "quotient", || {
                         quotient_for(src, z, &dom, cfg, &mut Local, &mut ResidentProbe(timings))
@@ -691,21 +699,39 @@ where
                         })
                     }),
                 );
-            });
-            sc.spawn(|_| {
+            };
+            let a_job = |_: &rayon::Scope<'_>| {
                 a = Some(time_resident(timings, "msm_a", || {
                     resident_msm(&key.a_query, chunk, &z_sc)
                 }));
-            });
-            if !r.is_zero() {
-                sc.spawn(|_| {
-                    b1 = Some(time_resident(timings, "msm_b1", || {
-                        if let Some(scalars) = b_scalars {
-                            return crate::msm::msm(&key.b_g1_query, scalars);
-                        }
-                        resident_msm(&key.b_g1_query, chunk, &z_sc)
-                    }));
-                });
+            };
+            let b1_job = |_: &rayon::Scope<'_>| {
+                b1 = Some(time_resident(timings, "msm_b1", || {
+                    if let Some(scalars) = b_scalars {
+                        return crate::msm::msm(&key.b_g1_query, scalars);
+                    }
+                    resident_msm(&key.b_g1_query, chunk, &z_sc)
+                }));
+            };
+            #[cfg(feature = "msm-b1-spawn-bench")]
+            if b1_first && !r.is_zero() {
+                sc.spawn(b1_job);
+                sc.spawn(h_job);
+                sc.spawn(a_job);
+            } else {
+                sc.spawn(h_job);
+                sc.spawn(a_job);
+                if !r.is_zero() {
+                    sc.spawn(b1_job);
+                }
+            }
+            #[cfg(not(feature = "msm-b1-spawn-bench"))]
+            {
+                sc.spawn(h_job);
+                sc.spawn(a_job);
+                if !r.is_zero() {
+                    sc.spawn(b1_job);
+                }
             }
             sc.spawn(|_| {
                 b2 = Some(time_resident(timings, "msm_b2", || {

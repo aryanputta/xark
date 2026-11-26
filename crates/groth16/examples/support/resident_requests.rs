@@ -58,6 +58,14 @@ pub(super) fn run(args: &[String]) {
     };
     assert!(!tracking(), "use BENCH_TIME=1 for request timing");
     let profile = std::env::var_os("BENCH_REQUEST_PROFILE").is_some();
+    #[cfg(feature = "msm-b1-spawn-bench")]
+    let b1_first = match std::env::var("BENCH_B1_SPAWN_FIRST").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Err(_) => false,
+        _ => panic!("BENCH_B1_SPAWN_FIRST must be 0 or 1"),
+    };
+    #[cfg(feature = "msm-b1-spawn-bench")]
+    eprintln!("bench B1 spawn first: {}", u8::from(b1_first));
     let use_gls = match mode.as_str() {
         "cpu" => false,
         "gls" => true,
@@ -154,6 +162,8 @@ pub(super) fn run(args: &[String]) {
         let mut prover = ProfiledCpu {
             cpu,
             profiles: profile.then_some(&mut profiles),
+            #[cfg(feature = "msm-b1-spawn-bench")]
+            b1_first,
             shifted: None,
             cached_gls: cached_msm
                 .as_ref()

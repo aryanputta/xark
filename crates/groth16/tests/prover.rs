@@ -375,6 +375,54 @@ fn split_resident_timing_keeps_the_proof_and_reports_tasks() {
     );
 }
 
+#[cfg(feature = "msm-b1-spawn-bench")]
+#[test]
+fn b1_spawn_priority_preserves_proofs_with_and_without_b1_work() {
+    struct First;
+    impl xark_groth16::Probe for First {
+        fn b1_spawn_first(&self) -> bool {
+            true
+        }
+    }
+
+    let (program, assignment) = random_program(194, 91);
+    let circuit = XarkCircuit::for_proving_preminimized(program.clone(), assignment.clone());
+    let (key, vk) =
+        ArkG16::circuit_specific_setup(circuit, &mut ChaCha20Rng::seed_from_u64(194)).unwrap();
+    let source = ProgramSource::new(&program);
+    let witness = source.layout().assignment_from_map(&assignment);
+    let public = witness[1..source.layout().num_instance()].to_vec();
+    let config = ProverConfig {
+        merge_below: 0,
+        ..ProverConfig::default()
+    };
+    for r in [Fr::from(0u64), Fr::from(19u64)] {
+        let s = Fr::from(23u64);
+        let baseline = xark_groth16::prove_with_randomness(
+            &source,
+            &witness,
+            &mut InMemoryPk::new(&key),
+            r,
+            s,
+            &config,
+            &mut (),
+        )
+        .unwrap();
+        let candidate = xark_groth16::prove_with_randomness(
+            &source,
+            &witness,
+            &mut InMemoryPk::new(&key),
+            r,
+            s,
+            &config,
+            &mut First,
+        )
+        .unwrap();
+        assert_eq!(baseline, candidate);
+        assert!(ArkG16::verify(&vk, &public, &candidate).unwrap());
+    }
+}
+
 #[cfg(feature = "msm-b-shared-bench")]
 #[test]
 fn shared_b_scalars_match_split_cpu_across_distinct_requests() {

@@ -232,6 +232,8 @@ impl Probe for Phases {
 
 struct ResidentProofProbe<'a> {
     timings: Option<&'a xark_groth16::prover::ResidentTimingSink<'a>>,
+    #[cfg(feature = "msm-b1-spawn-bench")]
+    b1_first: bool,
     #[cfg(feature = "msm-g2-shifted-bench")]
     shifted: Option<&'a xark_groth16::msm::shifted::ShiftedBases<'a>>,
     #[cfg(feature = "msm-g2-shifted-bench")]
@@ -241,6 +243,11 @@ struct ResidentProofProbe<'a> {
 }
 
 impl Probe for ResidentProofProbe<'_> {
+    #[cfg(feature = "msm-b1-spawn-bench")]
+    fn b1_spawn_first(&self) -> bool {
+        self.b1_first
+    }
+
     fn resident_timings(&self) -> Option<&xark_groth16::prover::ResidentTimingSink<'_>> {
         self.timings
     }
@@ -270,6 +277,8 @@ struct TaskSpan {
 struct ProfiledCpu<'a, P> {
     cpu: Cpu<P>,
     profiles: Option<&'a mut Vec<Vec<TaskSpan>>>,
+    #[cfg(feature = "msm-b1-spawn-bench")]
+    b1_first: bool,
     #[cfg(feature = "msm-g2-shifted-bench")]
     shifted: Option<&'a xark_groth16::msm::shifted::ShiftedBases<'a>>,
     #[cfg(feature = "msm-g2-shifted-bench")]
@@ -300,6 +309,8 @@ impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
                 &self.cpu.cfg,
                 &mut ResidentProofProbe {
                     timings: None,
+                    #[cfg(feature = "msm-b1-spawn-bench")]
+                    b1_first: self.b1_first,
                     #[cfg(feature = "msm-g2-shifted-bench")]
                     shifted: self.shifted,
                     #[cfg(feature = "msm-g2-shifted-bench")]
@@ -327,6 +338,8 @@ impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
             &self.cpu.cfg,
             &mut ResidentProofProbe {
                 timings: Some(&record),
+                #[cfg(feature = "msm-b1-spawn-bench")]
+                b1_first: self.b1_first,
                 #[cfg(feature = "msm-g2-shifted-bench")]
                 shifted: self.shifted,
                 #[cfg(feature = "msm-g2-shifted-bench")]
@@ -829,6 +842,8 @@ fn main() {
             provers.push(Box::new(ProfiledCpu {
                 cpu,
                 profiles: profile.then_some(&mut profiles),
+                #[cfg(feature = "msm-b1-spawn-bench")]
+                b1_first: false,
                 #[cfg(feature = "msm-g2-shifted-bench")]
                 shifted: shifted.as_ref(),
                 #[cfg(feature = "msm-g2-shifted-bench")]
