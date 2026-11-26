@@ -146,6 +146,74 @@ pub(super) fn run(args: &[String], xark_only: bool) {
     }
 }
 
+#[cfg(feature = "msm-g2-endpoint-bench")]
+pub(super) fn run_g2_endpoint_pairs(args: &[String]) {
+    let [xbc_path, pk_path, directory, options @ ..] = args else {
+        panic!(
+            "usage: bench_prove query-msm-g2-endpoints-paired <circuit.xbc> <reduced pk.bin> <statement-dir> [pairs] [warmup pairs]"
+        );
+    };
+    let (samples, warmups) = counts(options).unwrap_or_else(|reason| panic!("{reason}"));
+    assert!(!super::tracking(), "set BENCH_TIME=1 to time query MSMs");
+    for flag in [
+        "BENCH_G2_TRIM_INVERSE_ENDPOINTS",
+        "NO_BATCH_AFFINE",
+        "NO_GLV",
+    ] {
+        assert!(
+            std::env::var_os(flag).is_none(),
+            "unset {flag} for the paired query"
+        );
+    }
+    let (pk, scalars) = load(xbc_path, pk_path, Path::new(directory));
+    let bases = &pk.b_g2_query;
+    let expected = G2Projective::msm_bigint(bases, &scalars);
+    let measure = |trim| {
+        // MSM returns only after all its Rayon work has joined.
+        msm::set_bench_g2_trim_inverse_endpoints(trim);
+        timed(|| msm::msm::<G2Projective>(bases, &scalars))
+    };
+    let mut pairs = Vec::with_capacity(samples);
+    for iteration in 0..(samples + warmups) {
+        let trim_first = iteration % 2 != warmups % 2;
+        let first = measure(trim_first);
+        let second = measure(!trim_first);
+        let (baseline, trimmed) = if trim_first {
+            (second, first)
+        } else {
+            (first, second)
+        };
+        assert!(
+            msm::same_point(&baseline.0, &expected),
+            "B2 baseline pair {} differs from Arkworks",
+            iteration + 1
+        );
+        assert!(
+            msm::same_point(&trimmed.0, &expected),
+            "B2 trimmed pair {} differs from Arkworks",
+            iteration + 1
+        );
+        if iteration >= warmups {
+            pairs.push((trim_first, baseline.1, trimmed.1));
+        }
+    }
+    msm::set_bench_g2_trim_inverse_endpoints(false);
+    println!(
+        "query msm g2 endpoints paired verified: query=b2 terms={} threads={} pairs={samples} warmup_pairs={warmups} xark_glv=true xark_batch_affine=true",
+        scalars.len(),
+        rayon::current_num_threads(),
+    );
+    for (index, (trim_first, baseline, trimmed)) in pairs.into_iter().enumerate() {
+        let first = if trim_first { "trimmed" } else { "baseline" };
+        println!(
+            "query msm g2 endpoints paired: query=b2 pair={} first={first} baseline_ns={} trimmed_ns={}",
+            index + 1,
+            baseline.as_nanos(),
+            trimmed.as_nanos(),
+        );
+    }
+}
+
 fn measure_xark<G: SwCurve>(
     query: &str,
     bases: &[G::Affine],

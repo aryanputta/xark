@@ -81,6 +81,17 @@ pub static GLV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// Additions per shared inversion.
 const BATCH: usize = 512;
 
+#[cfg(feature = "msm-g2-endpoint-bench")]
+static G2_TRIM_INVERSE_ENDPOINTS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Toggle endpoint elision in G2 affine batch inversion before benchmarking.
+#[cfg(feature = "msm-g2-endpoint-bench")]
+#[doc(hidden)]
+pub fn set_bench_g2_trim_inverse_endpoints(enabled: bool) {
+    G2_TRIM_INVERSE_ENDPOINTS.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Affine buckets filled by batch-affine additions: each `(bucket, point)` addition
 /// costs ~5M+1S (vs 8M+2S for an XYZZ mixed add); one field inversion is shared
 /// by a whole batch (Montgomery's trick). A bucket may appear once per batch; a
@@ -100,6 +111,8 @@ struct AffineBuckets<G: SwCurve> {
     side: Vec<G::Bucket>,
     den: Vec<G::BaseField>,
     pre: Vec<G::BaseField>,
+    #[cfg(feature = "msm-g2-endpoint-bench")]
+    trim_inverse_endpoints: bool,
 }
 
 impl<G: SwCurve> AffineBuckets<G> {
@@ -115,6 +128,9 @@ impl<G: SwCurve> AffineBuckets<G> {
             side: Vec::new(),
             den: Vec::with_capacity(BATCH),
             pre: Vec::with_capacity(BATCH),
+            #[cfg(feature = "msm-g2-endpoint-bench")]
+            trim_inverse_endpoints: G::BaseField::extension_degree() == 2
+                && G2_TRIM_INVERSE_ENDPOINTS.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 
@@ -175,46 +191,79 @@ impl<G: SwCurve> AffineBuckets<G> {
     }
 
     fn flush(&mut self) {
+        #[cfg(feature = "msm-g2-endpoint-bench")]
+        if self.trim_inverse_endpoints {
+            self.invert_and_update::<true>();
+        } else {
+            self.invert_and_update::<false>();
+        }
+        #[cfg(not(feature = "msm-g2-endpoint-bench"))]
+        self.invert_and_update::<false>();
+        self.batch.clear();
+        self.epoch = self.epoch.wrapping_add(1).max(1);
+    }
+
+    #[inline]
+    fn invert_and_update<const TRIM: bool>(&mut self) {
         use crate::limbs::FastSub;
-        use ark_ff::{AdditiveGroup, Field};
-        let one = G::BaseField::one();
+        use ark_ff::AdditiveGroup;
         self.den.clear();
         self.pre.clear();
-        let mut acc = one;
-        for &(b, px, py) in &self.batch {
+        let denominator = |b: u32, px: G::BaseField, py: G::BaseField| {
             let (x1, y1) = (self.x[b as usize], self.y[b as usize]);
-            let d = if x1 != px {
+            if x1 != px {
                 px.fsub(&x1)
             } else if y1 == py && !y1.is_zero() {
                 y1.double() // doubling
             } else {
-                one // P + (−P) = ∞ (or a 2-torsion point): no inverse needed
+                G::BaseField::one() // P + (−P) = ∞: no inverse needed
+            }
+        };
+        let mut acc = if TRIM {
+            let Some(&(b, px, py)) = self.batch.first() else {
+                return;
             };
+            denominator(b, px, py)
+        } else {
+            G::BaseField::one()
+        };
+        let first = usize::from(TRIM);
+        for &(b, px, py) in &self.batch[first..] {
+            let d = denominator(b, px, py);
             self.pre.push(acc);
             self.den.push(d);
             acc *= d;
         }
         let mut inv = acc.inverse().expect("nonzero batch denominator");
-        for i in (0..self.batch.len()).rev() {
-            let (b, px, py) = self.batch[i];
-            let bi = b as usize;
+        for i in (0..self.den.len()).rev() {
             let inv_i = inv * self.pre[i];
             inv *= self.den[i];
-            let (x1, y1) = (self.x[bi], self.y[bi]);
-            let lambda = if x1 != px {
-                py.fsub(&y1) * inv_i
-            } else if y1 == py && !y1.is_zero() {
-                (x1.square().double() + x1.square() + G::coeff_a()) * inv_i
-            } else {
-                self.used[bi] = false;
-                continue;
-            };
-            let x3 = lambda.square().fsub(&x1).fsub(&px);
-            self.y[bi] = (lambda * x1.fsub(&x3)).fsub(&y1);
-            self.x[bi] = x3;
+            self.apply_inverse(i + first, inv_i);
         }
-        self.batch.clear();
-        self.epoch = self.epoch.wrapping_add(1).max(1);
+        if TRIM {
+            // The reverse sweep has multiplied out every factor except d₀.
+            self.apply_inverse(0, inv);
+        }
+    }
+
+    #[inline(always)]
+    fn apply_inverse(&mut self, i: usize, inv: G::BaseField) {
+        use crate::limbs::FastSub;
+        use ark_ff::AdditiveGroup;
+        let (b, px, py) = self.batch[i];
+        let bi = b as usize;
+        let (x1, y1) = (self.x[bi], self.y[bi]);
+        let lambda = if x1 != px {
+            py.fsub(&y1) * inv
+        } else if y1 == py && !y1.is_zero() {
+            (x1.square().double() + x1.square() + G::coeff_a()) * inv
+        } else {
+            self.used[bi] = false;
+            return;
+        };
+        let x3 = lambda.square().fsub(&x1).fsub(&px);
+        self.y[bi] = (lambda * x1.fsub(&x3)).fsub(&y1);
+        self.x[bi] = x3;
     }
 
     /// Finish the batches (the queue's last few go to the side buckets); each
@@ -687,6 +736,90 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
 mod tests {
     use super::*;
     use ark_ff::Zero;
+
+    #[cfg(feature = "msm-g2-endpoint-bench")]
+    #[test]
+    fn g2_inverse_endpoints_match_arkworks_across_batch_sizes() {
+        use ark_bn254::{G2Affine, G2Projective};
+        use ark_ec::AffineRepr;
+
+        let p = G2Affine::generator();
+        let q = (p.into_group() + p).into_affine();
+        let points = [q, p, -p];
+        for count in [0, 1, 2, 3, 511, 512] {
+            for phase in 0..3 {
+                for trim in [false, true] {
+                    let mut buckets = AffineBuckets::<G2Projective>::new(count.max(1));
+                    buckets.trim_inverse_endpoints = trim;
+                    for b in 0..count {
+                        let (x, y) = p.xy().unwrap();
+                        buckets.add(b as u32, x, y);
+                    }
+                    for b in 0..count {
+                        let (x, y) = points[(b + phase) % 3].xy().unwrap();
+                        buckets.add(b as u32, x, y);
+                    }
+                    let epoch = buckets.epoch;
+                    buckets.flush();
+                    assert_eq!(buckets.epoch, epoch + 1);
+                    if count < BATCH {
+                        assert_eq!(buckets.pre.len(), count.saturating_sub(usize::from(trim)));
+                        assert_eq!(buckets.den.len(), buckets.pre.len());
+                    }
+                    let (xs, ys, used, side) = buckets.finish();
+                    assert!(side.is_empty());
+                    for b in 0..count {
+                        let expected = p.into_group() + points[(b + phase) % 3];
+                        let actual = if used[b] {
+                            G2Projective::from_xy(xs[b], ys[b]).into_group()
+                        } else {
+                            G2Projective::zero()
+                        };
+                        assert!(
+                            same_point(&actual, &expected),
+                            "count={count}, phase={phase}, bucket={b}, trim={trim}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "msm-g2-endpoint-bench")]
+    #[test]
+    fn g2_inverse_endpoints_preserve_spills_and_cancelled_bucket_reuse() {
+        use ark_bn254::{G2Affine, G2Projective};
+        use ark_ec::AffineRepr;
+
+        let p = G2Affine::generator();
+        let q = (p.into_group() + p).into_affine();
+        let mut additions = vec![(0, p), (0, -p), (1, p), (1, q)];
+        additions.extend(std::iter::repeat_n((2, p), BATCH + 2));
+        additions.push((0, q));
+        additions.extend(std::iter::repeat_n((3, p), 8));
+        let mut expected = [G2Projective::zero(); 4];
+        for &(bucket, point) in &additions {
+            expected[bucket as usize] += point;
+        }
+        for trim in [false, true] {
+            let mut buckets = AffineBuckets::<G2Projective>::new(expected.len());
+            buckets.trim_inverse_endpoints = trim;
+            for &(bucket, point) in &additions {
+                let (x, y) = point.xy().unwrap();
+                buckets.add(bucket, x, y);
+            }
+            let (xs, ys, used, side) = buckets.finish();
+            assert!(!side[2].is_zero());
+            assert!(!side[3].is_zero());
+            for (b, expected) in expected.iter().enumerate() {
+                let mut actual: G2Projective = side[b].into();
+                if used[b] {
+                    actual += G2Projective::from_xy(xs[b], ys[b]);
+                }
+                assert!(same_point(&actual, expected), "bucket={b}, trim={trim}");
+            }
+        }
+    }
 
     #[test]
     fn booth_digits_reconstruct_scalar() {

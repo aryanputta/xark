@@ -34,6 +34,10 @@
 //! disable GLV for Xark's query benchmark.
 //! `query-msm-xark` times Xark's B1 and B2 queries in separate batches and
 //! checks each result against precomputed Arkworks references.
+//! With `--features msm-g2-endpoint-bench`, set `BENCH_G2_TRIM_INVERSE_ENDPOINTS`
+//! to `1` to omit redundant products in G2 affine batch inversion. `0` is the default.
+//! `query-msm-g2-endpoints-paired` takes the same arguments as `query-msm-xark`
+//! and alternates both modes for B2 in one process. Leave the selector unset.
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
 //! Arkworks reference sums for a same-input benchmark. Use reproducible test
 //! fixtures and keep the witness-bearing export in local scratch storage.
@@ -318,10 +322,42 @@ fn main() {
     if std::env::var("BENCH_TIME").is_ok() {
         TRACK.store(false, Relaxed);
     }
+    let args: Vec<String> = std::env::args().collect();
+    if args
+        .get(1)
+        .is_some_and(|mode| mode == "query-msm-g2-endpoints-paired")
+    {
+        #[cfg(feature = "msm-g2-endpoint-bench")]
+        {
+            query_msm::run_g2_endpoint_pairs(&args[2..]);
+            return;
+        }
+        #[cfg(not(feature = "msm-g2-endpoint-bench"))]
+        panic!("query-msm-g2-endpoints-paired requires the msm-g2-endpoint-bench feature");
+    }
     if std::env::var("NO_BATCH_AFFINE").is_ok() {
         xark_groth16::msm::BATCH_AFFINE.store(false, Relaxed);
     }
-    let args: Vec<String> = std::env::args().collect();
+    #[cfg(feature = "msm-g2-endpoint-bench")]
+    {
+        let trim = match std::env::var("BENCH_G2_TRIM_INVERSE_ENDPOINTS") {
+            Err(std::env::VarError::NotPresent) => false,
+            Ok(setting) if setting == "0" => false,
+            Ok(setting) if setting == "1" => true,
+            _ => panic!("BENCH_G2_TRIM_INVERSE_ENDPOINTS must be 0 or 1"),
+        };
+        assert!(
+            !trim || xark_groth16::msm::BATCH_AFFINE.load(Relaxed),
+            "trimmed inverse endpoints require batch affine"
+        );
+        xark_groth16::msm::set_bench_g2_trim_inverse_endpoints(trim);
+        eprintln!("bench g2 trim inverse endpoints: {}", u8::from(trim));
+    }
+    #[cfg(not(feature = "msm-g2-endpoint-bench"))]
+    assert!(
+        std::env::var_os("BENCH_G2_TRIM_INVERSE_ENDPOINTS").is_none(),
+        "BENCH_G2_TRIM_INVERSE_ENDPOINTS requires the msm-g2-endpoint-bench feature"
+    );
     let mode = args[1].as_str();
     match mode {
         "query-msm" | "query-msm-xark" => {
