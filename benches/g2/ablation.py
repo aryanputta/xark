@@ -51,6 +51,18 @@ PERF_EVENTS = (
 SPAN = re.compile(r"^resident task: (\d+) (\w+) (\d+) (\d+)$", re.M)
 
 
+def physical_core_groups(affinity, cpu_root=Path("/sys/devices/system/cpu")):
+    groups = {}
+    for cpu in affinity:
+        siblings = (
+            (cpu_root / f"cpu{cpu}/topology/thread_siblings_list").read_text().strip()
+        )
+        if not siblings:
+            raise ValueError(f"CPU {cpu} has no reported core sibling group")
+        groups.setdefault(siblings, []).append(cpu)
+    return groups
+
+
 def runner_at(path):
     # Validate the archived, audited runner before executing its module.
     import hashlib
@@ -185,6 +197,7 @@ def run(args):
     )
     binary_hash = runner.digest(binary)
     host = runner.host()
+    core_groups = None
     if not args.diagnostic:
         runner.require(
             sys.platform == "linux", "strict performance mode requires Linux"
@@ -202,6 +215,21 @@ def run(args):
         runner.require(
             not runner.processes(os.getpgrp(), args.contention_percent),
             "host preflight detected contention",
+        )
+    if args.topology:
+        runner.require(
+            sys.platform == "linux" and host["affinity"],
+            "Linux affinity is required for topology checks",
+        )
+        runner.require(
+            len(host["affinity"]) == args.threads and args.threads >= 2,
+            "pin the requested worker count before checking topology",
+        )
+        core_groups = physical_core_groups(host["affinity"])
+        expected = 1 if args.topology == "siblings" else args.threads
+        runner.require(
+            len(core_groups) == expected,
+            f"CPU affinity does not match {args.topology} topology: {core_groups}",
         )
     if args.perf_counters:
         runner.require(
@@ -237,6 +265,8 @@ def run(args):
         "fixture_manifest_sha256": FIXTURE_MANIFEST_SHA256,
         "seed": args.seed,
         "threads": args.threads,
+        "requested_topology": args.topology,
+        "physical_core_groups": core_groups,
         "diagnostic": args.diagnostic,
         "precompute": args.precompute,
         "arm_bits": factor_settings,
@@ -433,6 +463,7 @@ def main():
     parser.add_argument("--diagnostic", action="store_true")
     parser.add_argument("--perf-counters", action="store_true")
     parser.add_argument("--precompute", choices=PRECOMPUTE, default="shifted")
+    parser.add_argument("--topology", choices=("siblings", "distinct"))
     args = parser.parse_args()
     if (
         min(
