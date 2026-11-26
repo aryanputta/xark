@@ -4,10 +4,25 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import candidate_lanes, changed_oracle, proof_samples, query_samples, summarize
+from run import (
+    candidate_lanes,
+    changed_oracle,
+    proof_samples,
+    query_samples,
+    revisions,
+    summarize,
+)
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_separate_relation_exporter_requires_its_own_source_pin(self):
+        config = {
+            "sources": {"xark": {}, "examples": {}},
+            "binaries": {"relation_exporter": "export-capable-binary"},
+        }
+        with self.assertRaisesRegex(ValueError, "relation_exporter"):
+            revisions(config, Path.cwd(), ["gnark"])
+
     def test_gnark_candidate_requires_explicit_lane_and_single_line_receipt(self):
         self.assertEqual(candidate_lanes({}), [])
         self.assertEqual(candidate_lanes({"candidate": {}}), ["xark"])

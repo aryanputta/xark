@@ -42,6 +42,8 @@ Live candidate/Gnark runs require Linux, `--strict-contention`, and affinity con
 
 The direct lane also requires `binaries.gnark_verifier` and a receipt-capable Gnark adapter from `test/gnark-proof-receipts`. Build the independent verifier with `cargo build --locked --release -p xark-groth16 --example verify_gnark_receipt`. After each pair, Arkworks checks every Gnark warmup and measured proof against the pinned fixture statement and its altered statement. The separate receipt contains only public verifying-key points and proof points. For commitment-free BN254, the key tuple is alpha G1, beta G2, gamma G2, delta G2 and the two public-input G1 coefficients. Each proof tuple contains A, B and C. G2 coordinates are in `x.c0, x.c1, y.c0, y.c1` order. Unsupported commitments and invalid points fail the check. The receipt verifies proofs against the bridge's generated key. Its relation provenance still comes from the pinned deterministic export and adapter.
 
+For current upstream Xark 0.5 comparison, build the `bench_verified_warm` example on `bench/verified-upstream-v05`. Use that binary for `binaries.bench` and its checkout for `sources.xark`. This branch starts from the current 0.5 PR head and adds only the checked benchmark example. For Gnark or Rapidsnark pairs, add `binaries.relation_exporter` pointing to the export-capable companion `bench_prove` and pin its checkout in `sources.relation_exporter`. A live Gnark comparison always requires the independent verifier, whether the paired Xark arm is upstream or experimental.
+
 ```sh
 python3 -m unittest discover -s benches/competitive -v
 ```

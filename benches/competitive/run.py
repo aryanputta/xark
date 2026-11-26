@@ -82,6 +82,11 @@ def revisions(config, root, competitors):
     needed = {"xark", "examples"}
     if set(competitors).intersection(candidate_lanes(config)):
         needed.add("xark_candidate")
+    if (
+        set(competitors) & {"gnark", "rapidsnark"}
+        and "relation_exporter" in config["binaries"]
+    ):
+        needed.add("relation_exporter")
     needed.update(set(competitors) & {"rapidsnark", "constantine", "icicle"})
     require(needed <= sources.keys(), f"source pins required for {sorted(needed)}")
     result = {}
@@ -476,17 +481,29 @@ def run_suite(args):
             files[name] = (root / config["binaries"][name]).resolve(strict=True)
             if name not in {"rapidsnark_library", *BINARY_NAMES["icicle"][1:]}:
                 require(os.access(files[name], os.X_OK), f"{name} must be executable")
-    if "gnark" in lanes:
+    gnark_independent = (
+        "gnark" in competitors and "gnark_verifier" in config["binaries"]
+    )
+    if "gnark" in lanes or ("gnark" in competitors and not args.smoke):
         require(
-            "gnark_verifier" in config["binaries"],
-            "direct Gnark pairing requires an independent verifier",
+            gnark_independent,
+            "Gnark live and candidate comparisons require an independent verifier",
         )
+    if gnark_independent:
         files["gnark_verifier"] = (root / config["binaries"]["gnark_verifier"]).resolve(
             strict=True
         )
         require(
             os.access(files["gnark_verifier"], os.X_OK),
             "gnark_verifier must be executable",
+        )
+    if "relation_exporter" in sources:
+        files["relation_exporter"] = (
+            root / config["binaries"]["relation_exporter"]
+        ).resolve(strict=True)
+        require(
+            os.access(files["relation_exporter"], os.X_OK),
+            "relation_exporter must be executable",
         )
     candidate_env = {}
     if candidate:
@@ -585,13 +602,13 @@ def run_suite(args):
         not affinity or len(affinity) >= args.threads,
         "thread budget exceeds CPU affinity",
     )
-    if "gnark" in lanes and not args.smoke:
+    if "gnark" in competitors and not args.smoke:
         require(
             sys.platform == "linux"
             and affinity
             and len(affinity) == args.threads
             and args.strict_contention,
-            "live candidate/Gnark pairing requires Linux, exact CPU affinity and strict contention sampling",
+            "live Gnark pairing requires Linux, exact CPU affinity and strict contention sampling",
         )
     if args.strict_contention:
         try:
@@ -692,8 +709,19 @@ def run_suite(args):
         vector = export / "queries.bin"
         if set(competitors) & {"gnark", "rapidsnark"}:
             # The exporter creates the private directory and refuses existing paths.
-            invoke(
-                (bench, "export-iden3", circuit, fixture, iden3), f"{workload}-iden3"
+            export_log = invoke(
+                (
+                    files.get("relation_exporter", bench),
+                    "export-iden3",
+                    circuit,
+                    fixture,
+                    iden3,
+                ),
+                f"{workload}-iden3",
+            )
+            require(
+                "fixture witness matches public statement" in export_log.splitlines(),
+                f"{workload} missing relation export statement check",
             )
             require(
                 all(
@@ -812,7 +840,7 @@ def run_suite(args):
                 gnark_receipt = None
                 for order, (backend, argv, additions) in enumerate(arms, 1):
                     label = f"{workload}-{competitor}-{index + 1}-{backend}"
-                    if gnark_candidate and backend == "gnark":
+                    if gnark_independent and backend == "gnark":
                         gnark_receipt = output / f"{label}-public-proofs.json"
                         additions = additions | {
                             "GNARK_PROOF_RECEIPT": str(gnark_receipt)
@@ -824,7 +852,11 @@ def run_suite(args):
                             candidate["receipt"] in log.splitlines(),
                             f"{label} missing candidate receipt",
                         )
-                    if gnark_candidate and backend == "xark-candidate":
+                    if (
+                        gnark_independent
+                        and competitor == "gnark"
+                        and backend == xark_reference
+                    ):
                         require(
                             f"warm proofs verified by Arkworks and Xark: xark-groth16 warmups={args.warmups} measured={args.samples}"
                             in log.splitlines(),
