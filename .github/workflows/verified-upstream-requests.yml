@@ -2,7 +2,7 @@ name: Verified upstream request baseline
 
 on:
   push:
-    branches: [bench/verified-upstream-requests]
+    branches: [bench/verified-upstream-requests, bench/upstream-api-equivalent]
 
 permissions:
   contents: read
