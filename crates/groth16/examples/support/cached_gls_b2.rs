@@ -589,7 +589,7 @@ mod tests {
         assert_eq!(msm::msm::<G2Projective>(&cache.points, &encoded), expected);
         #[cfg(feature = "msm-g2-shifted-bench")]
         assert_eq!(
-            ResidentCachedGls::new(&bases)
+            ResidentCachedGls::new(&bases, true)
                 .unwrap()
                 .msm(&bases, &scalars),
             expected
