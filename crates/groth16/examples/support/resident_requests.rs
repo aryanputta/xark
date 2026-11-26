@@ -134,16 +134,21 @@ pub(super) fn run(args: &[String]) {
             solver.as_ref(),
         );
         let solve_elapsed = began.elapsed();
+        let convert_start = Instant::now();
         let witness = Zeroizing::new(source.layout().assignment_from_map(&assignment));
         for value in assignment.values_mut() {
             value.zeroize();
         }
         drop(assignment);
+        let convert_elapsed = convert_start.elapsed();
+        let check_start = Instant::now();
         assert!(witness[1] == fixture.expected, "witness statement mismatch");
         assert!(
             first_unsatisfied_compiled(&source, &witness).is_none(),
             "request witness is unsatisfied"
         );
+        let check_elapsed = check_start.elapsed();
+        let construct_start = Instant::now();
         let cpu = Cpu::new(xark_groth16::InMemoryPk::new(&key), cfg.clone());
         let mut profiles = Vec::new();
         let mut prover = ProfiledCpu {
@@ -156,11 +161,25 @@ pub(super) fn run(args: &[String]) {
             #[cfg(feature = "msm-b-shared-bench")]
             share_b_scalars: use_gls,
         };
+        let construct_elapsed = construct_start.elapsed();
+        let prove_start = Instant::now();
         let proof = prove_with_rng(&mut prover, &source, &witness, &mut rand::thread_rng())
             .expect("generate request proof");
         drop(prover);
         drop(witness);
-        (proof, began.elapsed(), solve_elapsed, profiles)
+        let prove_elapsed = prove_start.elapsed();
+        (
+            proof,
+            began.elapsed(),
+            solve_elapsed,
+            [
+                convert_elapsed,
+                check_elapsed,
+                construct_elapsed,
+                prove_elapsed,
+            ],
+            profiles,
+        )
     };
 
     let verify = |index: usize, proof: &xark_groth16::Proof<Bn254>| {
@@ -191,7 +210,7 @@ pub(super) fn run(args: &[String]) {
         let last = first.saturating_add(concurrency).min(requests);
         let proofs: Vec<_> = (first..last).into_par_iter().map(prove).collect();
         let elapsed = start.elapsed();
-        for (index, (proof, _, _, _)) in (first..last).zip(&proofs) {
+        for (index, (proof, _, _, _, _)) in (first..last).zip(&proofs) {
             verify(index, proof);
         }
         println!(
@@ -199,7 +218,7 @@ pub(super) fn run(args: &[String]) {
             last - first,
             elapsed.as_nanos()
         );
-        for (index, (_, elapsed, solve_elapsed, spans)) in (first..last).zip(&proofs) {
+        for (index, (_, elapsed, solve_elapsed, phases, spans)) in (first..last).zip(&proofs) {
             println!(
                 "request verified index={index} fixture={} service_ns={}",
                 index % fixtures.len(),
@@ -208,6 +227,13 @@ pub(super) fn run(args: &[String]) {
             eprintln!(
                 "request solver index={index} solve_ns={}",
                 solve_elapsed.as_nanos()
+            );
+            eprintln!(
+                "request phases index={index} convert_ns={} check_ns={} construct_ns={} prove_ns={}",
+                phases[0].as_nanos(),
+                phases[1].as_nanos(),
+                phases[2].as_nanos(),
+                phases[3].as_nanos()
             );
             if profile {
                 assert_eq!(spans.len(), 1, "expected one profiled proof per request");
