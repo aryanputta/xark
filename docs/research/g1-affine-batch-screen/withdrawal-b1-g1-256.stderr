@@ -1,0 +1,46 @@
+bench G1 affine batch limit: 256
+request solver index=0 solve_ns=41824825
+request phases index=0 convert_ns=315890 check_ns=6206838 construct_ns=985 prove_ns=182956775
+request task index=0 phase=quotient offset_ns=57656 elapsed_ns=21850352
+request task index=0 phase=qap_eval_ab offset_ns=127315 elapsed_ns=5706301
+request task index=0 phase=msm_l offset_ns=1071718 elapsed_ns=45939947
+request task index=0 phase=qap_fft_forward offset_ns=6126115 elapsed_ns=9989604
+request task index=0 phase=qap_fft_inverse offset_ns=16388555 elapsed_ns=5006387
+request task index=0 phase=msm_h offset_ns=21908839 elapsed_ns=82521916
+request task index=0 phase=msm_b2 offset_ns=47015804 elapsed_ns=133358786
+request task index=0 phase=msm_a offset_ns=104542509 elapsed_ns=32466773
+request task index=0 phase=msm_b1 offset_ns=137013156 elapsed_ns=45658147
+request solver index=1 solve_ns=41741802
+request phases index=1 convert_ns=311605 check_ns=6102318 construct_ns=904 prove_ns=184719129
+request task index=1 phase=quotient offset_ns=79522 elapsed_ns=21903334
+request task index=1 phase=qap_eval_ab offset_ns=143550 elapsed_ns=5817865
+request task index=1 phase=msm_l offset_ns=1099137 elapsed_ns=47095022
+request task index=1 phase=qap_fft_forward offset_ns=6259678 elapsed_ns=10189806
+request task index=1 phase=qap_fft_inverse offset_ns=16724197 elapsed_ns=4932366
+request task index=1 phase=msm_h offset_ns=21983379 elapsed_ns=82843156
+request task index=1 phase=msm_b2 offset_ns=48199569 elapsed_ns=135221053
+request task index=1 phase=msm_a offset_ns=104833364 elapsed_ns=33019455
+request task index=1 phase=msm_b1 offset_ns=137856434 elapsed_ns=46566846
+request solver index=2 solve_ns=42818606
+request phases index=2 convert_ns=305490 check_ns=6113562 construct_ns=928 prove_ns=183456089
+request task index=2 phase=quotient offset_ns=63688 elapsed_ns=22124150
+request task index=2 phase=qap_eval_ab offset_ns=139939 elapsed_ns=5867803
+request task index=2 phase=msm_l offset_ns=1065485 elapsed_ns=45638388
+request task index=2 phase=qap_fft_forward offset_ns=6317898 elapsed_ns=10164131
+request task index=2 phase=qap_fft_inverse offset_ns=16761027 elapsed_ns=5096902
+request task index=2 phase=msm_h offset_ns=22188480 elapsed_ns=81430533
+request task index=2 phase=msm_b2 offset_ns=46708474 elapsed_ns=132673635
+request task index=2 phase=msm_a offset_ns=103785053 elapsed_ns=32544137
+request task index=2 phase=msm_b1 offset_ns=136333342 elapsed_ns=46486738
+request solver index=3 solve_ns=42121461
+request phases index=3 convert_ns=310026 check_ns=6048033 construct_ns=1095 prove_ns=182335889
+request task index=3 phase=quotient offset_ns=63994 elapsed_ns=22104492
+request task index=3 phase=qap_eval_ab offset_ns=118135 elapsed_ns=5751308
+request task index=3 phase=msm_l offset_ns=1081194 elapsed_ns=46188305
+request task index=3 phase=qap_fft_forward offset_ns=6220448 elapsed_ns=10183130
+request task index=3 phase=qap_fft_inverse offset_ns=16680714 elapsed_ns=5155773
+request task index=3 phase=msm_h offset_ns=22169098 elapsed_ns=80667859
+request task index=3 phase=msm_b2 offset_ns=47273978 elapsed_ns=133269009
+request task index=3 phase=msm_a offset_ns=102842383 elapsed_ns=32692540
+request task index=3 phase=msm_b1 offset_ns=135539730 elapsed_ns=46269761
+prepared stream solver: 1
