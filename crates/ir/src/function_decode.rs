@@ -1727,7 +1727,7 @@ impl PreparedStreamSolver {
         ),
         String,
     > {
-        let assign = eval::solve_witness(
+        let mut assign = eval::solve_witness(
             eval::WitnessProgram::Compiled(&self.witness),
             self.input_vars(),
             self.num_vars,
@@ -1737,9 +1737,26 @@ impl PreparedStreamSolver {
         .map(bn254_witness_slots)
         .map_err(|e| format!("solve: {e:?}"))?;
         let program = RowProgram::Compiled(&self.rows);
-        let (flags, sat_ok, quadratic) =
+        let (flags, sat_ok, mut quadratic) =
             classify_and_check(program, &assign, &self.modulus, self.num_vars, true);
         if !sat_ok {
+            use zeroize::Zeroize;
+            for value in assign.iter_mut().flatten() {
+                if let crate::solver::Fp::Bn254(scalar) = value {
+                    scalar.zeroize();
+                }
+            }
+            for (a, b) in quadratic
+                .iter_mut()
+                .filter_map(std::sync::OnceLock::get_mut)
+            {
+                if let crate::solver::Fp::Bn254(scalar) = a {
+                    scalar.zeroize();
+                }
+                if let crate::solver::Fp::Bn254(scalar) = b {
+                    scalar.zeroize();
+                }
+            }
             return Err("a constraint is unsatisfied".to_string());
         }
         let derived = || derived_vars_with_implicit_suffix(&self.inputs, self.num_vars);
