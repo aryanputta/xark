@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "fixtures": "/bench/fixtures",
+  "sources": {
+    "xark": {
+      "path": "/bench/xark-adapters",
+      "commit": "dc8ad92e0bdf34da5d614b39125127ce91aa116b"
+    },
+    "examples": {
+      "path": "/bench/privacy-ring-examples",
+      "commit": "a02886da343e5f3a14d6d8a2843bdb3fd696d94e"
+    },
+    "rapidsnark": {
+      "path": "/bench/rapidsnark",
+      "commit": "81eddf1a536d26497b237c0b8a04fe90baf7e439"
+    },
+    "constantine": {
+      "path": "/bench/constantine",
+      "commit": "4083170f19ec8dba15604bf0d443b5d852d634d6"
+    },
+    "icicle": {
+      "path": "/bench/icicle",
+      "commit": "6c77775961b0e4dc2be359feec1ac11536c18043"
+    }
+  },
+  "binaries": {
+    "bench": "/bench/xark-adapters/target/release/examples/bench_prove",
+    "gnark": "/bench/bin/privacy-rings-gnark",
+    "constantine": "/bench/bin/constantine-b1",
+    "icicle": "/bench/bin/icicle-query-msm",
+    "icicle_curve_bn254": "/bench/icicle-install/lib/libicicle_curve_bn254.so",
+    "icicle_field_bn254": "/bench/icicle-install/lib/libicicle_field_bn254.so",
+    "icicle_hash": "/bench/icicle-install/lib/libicicle_hash.so",
+    "icicle_device": "/bench/icicle-install/lib/libicicle_device.so",
+    "rapidsnark_library": "/bench/rapidsnark/build/src/librapidsnark.so",
+    "snarkjs": "/bench/node_modules/snarkjs",
+    "node": "/usr/bin/node"
+  },
+  "rapidsnark_keys": {
+    "escrow": {
+      "zkey": "/bench/rapidsnark-keys/escrow/test.zkey",
+      "vk": "/bench/rapidsnark-keys/escrow/vk.json"
+    },
+    "withdrawal": {
+      "zkey": "/bench/rapidsnark-keys/withdrawal/test.zkey",
+      "vk": "/bench/rapidsnark-keys/withdrawal/vk.json"
+    }
+  },
+  "toolchains": {
+    "rustc": "replace with rustc --version",
+    "go": "replace with go version",
+    "native": "record the compiler version and build flags used for each selected adapter"
+  }
+}
