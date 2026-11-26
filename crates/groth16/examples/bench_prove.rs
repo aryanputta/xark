@@ -34,6 +34,9 @@
 //! disable GLV for Xark's query benchmark.
 //! `query-msm-xark` times Xark's B1 and B2 queries in separate batches and
 //! checks each result against precomputed Arkworks references.
+//! Build with `--features msm-g2-inverse-bench` and set `BENCH_G2_INVERSE_LANES`
+//! to `1` (default) or `2` to compare serial and interleaved G2 batch inversion
+//! in `query-msm-xark` or `warm`.
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
 //! Arkworks reference sums for a same-input benchmark. Use reproducible test
 //! fixtures and keep the witness-bearing export in local scratch storage.
@@ -321,6 +324,26 @@ fn main() {
     if std::env::var("NO_BATCH_AFFINE").is_ok() {
         xark_groth16::msm::BATCH_AFFINE.store(false, Relaxed);
     }
+    #[cfg(feature = "msm-g2-inverse-bench")]
+    {
+        let lanes = match std::env::var("BENCH_G2_INVERSE_LANES") {
+            Err(std::env::VarError::NotPresent) => 1,
+            Ok(setting) if setting == "1" => 1,
+            Ok(setting) if setting == "2" => 2,
+            _ => panic!("BENCH_G2_INVERSE_LANES must be 1 or 2"),
+        };
+        assert!(
+            lanes == 1 || xark_groth16::msm::BATCH_AFFINE.load(Relaxed),
+            "two inverse lanes require batch affine"
+        );
+        xark_groth16::msm::set_bench_g2_interleaved_inverse(lanes == 2);
+        eprintln!("bench g2 inverse lanes: {lanes}");
+    }
+    #[cfg(not(feature = "msm-g2-inverse-bench"))]
+    assert!(
+        std::env::var_os("BENCH_G2_INVERSE_LANES").is_none(),
+        "BENCH_G2_INVERSE_LANES requires the msm-g2-inverse-bench feature"
+    );
     let args: Vec<String> = std::env::args().collect();
     let mode = args[1].as_str();
     match mode {

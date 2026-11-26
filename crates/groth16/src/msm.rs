@@ -81,6 +81,17 @@ pub static GLV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// Additions per shared inversion.
 const BATCH: usize = 512;
 
+#[cfg(feature = "msm-g2-inverse-bench")]
+static G2_INTERLEAVED_INVERSE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Use interleaved denominator products for G2 affine batches. Set before benchmarking.
+#[cfg(feature = "msm-g2-inverse-bench")]
+#[doc(hidden)]
+pub fn set_bench_g2_interleaved_inverse(enabled: bool) {
+    G2_INTERLEAVED_INVERSE.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Affine buckets filled by batch-affine additions: each `(bucket, point)` addition
 /// costs ~5M+1S (vs 8M+2S for an XYZZ mixed add); one field inversion is shared
 /// by a whole batch (Montgomery's trick). A bucket may appear once per batch; a
@@ -100,6 +111,8 @@ struct AffineBuckets<G: SwCurve> {
     side: Vec<G::Bucket>,
     den: Vec<G::BaseField>,
     pre: Vec<G::BaseField>,
+    #[cfg(feature = "msm-g2-inverse-bench")]
+    interleaved_inverse: bool,
 }
 
 impl<G: SwCurve> AffineBuckets<G> {
@@ -115,6 +128,9 @@ impl<G: SwCurve> AffineBuckets<G> {
             side: Vec::new(),
             den: Vec::with_capacity(BATCH),
             pre: Vec::with_capacity(BATCH),
+            #[cfg(feature = "msm-g2-inverse-bench")]
+            interleaved_inverse: G::BaseField::extension_degree() == 2
+                && G2_INTERLEAVED_INVERSE.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 
@@ -175,46 +191,113 @@ impl<G: SwCurve> AffineBuckets<G> {
     }
 
     fn flush(&mut self) {
-        use crate::limbs::FastSub;
-        use ark_ff::{AdditiveGroup, Field};
-        let one = G::BaseField::one();
         self.den.clear();
         self.pre.clear();
-        let mut acc = one;
+        #[cfg(feature = "msm-g2-inverse-bench")]
+        if self.interleaved_inverse && self.batch.len() >= 2 {
+            self.invert_interleaved();
+        } else {
+            self.invert_serial();
+        }
+        #[cfg(not(feature = "msm-g2-inverse-bench"))]
+        self.invert_serial();
+        self.batch.clear();
+        self.epoch = self.epoch.wrapping_add(1).max(1);
+    }
+
+    #[inline]
+    fn invert_serial(&mut self) {
+        let mut acc = G::BaseField::one();
         for &(b, px, py) in &self.batch {
-            let (x1, y1) = (self.x[b as usize], self.y[b as usize]);
-            let d = if x1 != px {
-                px.fsub(&x1)
-            } else if y1 == py && !y1.is_zero() {
-                y1.double() // doubling
-            } else {
-                one // P + (−P) = ∞ (or a 2-torsion point): no inverse needed
-            };
+            let d = self.denominator(b, px, py);
             self.pre.push(acc);
             self.den.push(d);
             acc *= d;
         }
         let mut inv = acc.inverse().expect("nonzero batch denominator");
         for i in (0..self.batch.len()).rev() {
-            let (b, px, py) = self.batch[i];
-            let bi = b as usize;
             let inv_i = inv * self.pre[i];
             inv *= self.den[i];
-            let (x1, y1) = (self.x[bi], self.y[bi]);
-            let lambda = if x1 != px {
-                py.fsub(&y1) * inv_i
-            } else if y1 == py && !y1.is_zero() {
-                (x1.square().double() + x1.square() + G::coeff_a()) * inv_i
-            } else {
-                self.used[bi] = false;
-                continue;
-            };
-            let x3 = lambda.square().fsub(&x1).fsub(&px);
-            self.y[bi] = (lambda * x1.fsub(&x3)).fsub(&y1);
-            self.x[bi] = x3;
+            self.apply_inverse(i, inv_i);
         }
-        self.batch.clear();
-        self.epoch = self.epoch.wrapping_add(1).max(1);
+    }
+
+    #[cfg(feature = "msm-g2-inverse-bench")]
+    fn invert_interleaved(&mut self) {
+        let mut even = G::BaseField::one();
+        let mut odd = G::BaseField::one();
+        let mut pairs = self.batch.chunks_exact(2);
+        for pair in &mut pairs {
+            let (b0, x0, y0) = pair[0];
+            let (b1, x1, y1) = pair[1];
+            let d0 = self.denominator(b0, x0, y0);
+            let d1 = self.denominator(b1, x1, y1);
+            self.pre.extend([even, odd]);
+            self.den.extend([d0, d1]);
+            even *= d0;
+            odd *= d1;
+        }
+        if let [(b, x, y)] = pairs.remainder() {
+            let d = self.denominator(*b, *x, *y);
+            self.pre.push(even);
+            self.den.push(d);
+            even *= d;
+        }
+
+        // Recover each lane's inverse from a single inversion of their product.
+        let both = (even * odd).inverse().expect("nonzero batch denominator");
+        let mut inv_even = both * odd;
+        let mut inv_odd = both * even;
+        let mut i = self.batch.len();
+        if !i.is_multiple_of(2) {
+            i -= 1;
+            let inv = inv_even * self.pre[i];
+            inv_even *= self.den[i];
+            self.apply_inverse(i, inv);
+        }
+        while i != 0 {
+            i -= 2;
+            let inv0 = inv_even * self.pre[i];
+            let inv1 = inv_odd * self.pre[i + 1];
+            inv_even *= self.den[i];
+            inv_odd *= self.den[i + 1];
+            self.apply_inverse(i + 1, inv1);
+            self.apply_inverse(i, inv0);
+        }
+    }
+
+    #[inline(always)]
+    fn denominator(&self, b: u32, px: G::BaseField, py: G::BaseField) -> G::BaseField {
+        use crate::limbs::FastSub;
+        use ark_ff::AdditiveGroup;
+        let (x, y) = (self.x[b as usize], self.y[b as usize]);
+        if x != px {
+            px.fsub(&x)
+        } else if y == py && !y.is_zero() {
+            y.double()
+        } else {
+            G::BaseField::one() // P + (−P) = ∞: no inverse needed
+        }
+    }
+
+    #[inline(always)]
+    fn apply_inverse(&mut self, i: usize, inv: G::BaseField) {
+        use crate::limbs::FastSub;
+        use ark_ff::AdditiveGroup;
+        let (b, px, py) = self.batch[i];
+        let bi = b as usize;
+        let (x, y) = (self.x[bi], self.y[bi]);
+        let lambda = if x != px {
+            py.fsub(&y) * inv
+        } else if y == py && !y.is_zero() {
+            (x.square().double() + x.square() + G::coeff_a()) * inv
+        } else {
+            self.used[bi] = false;
+            return;
+        };
+        let x3 = lambda.square().fsub(&x).fsub(&px);
+        self.y[bi] = (lambda * x.fsub(&x3)).fsub(&y);
+        self.x[bi] = x3;
     }
 
     /// Finish the batches (the queue's last few go to the side buckets); each
@@ -687,6 +770,87 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
 mod tests {
     use super::*;
     use ark_ff::Zero;
+
+    #[cfg(feature = "msm-g2-inverse-bench")]
+    #[test]
+    fn g2_inverse_lanes_match_arkworks_on_forward_and_reverse_seams() {
+        use ark_bn254::{G2Affine, G2Projective};
+        use ark_ec::AffineRepr;
+
+        let generator = G2Affine::generator();
+        let different = (generator.into_group() + generator).into_affine();
+        for count in [0, 1, 2, 3, 63, 64, BATCH - 1, BATCH] {
+            for interleaved in [false, true] {
+                let mut buckets = AffineBuckets::<G2Projective>::new(count.max(1));
+                buckets.interleaved_inverse = interleaved;
+                for b in 0..count {
+                    let (x, y) = generator.xy().unwrap();
+                    buckets.add(b as u32, x, y);
+                }
+                for b in 0..count {
+                    let other = [different, generator, -generator][b % 3];
+                    let (x, y) = other.xy().unwrap();
+                    buckets.add(b as u32, x, y);
+                }
+                let (xs, ys, used, side) = buckets.finish();
+                assert!(side.is_empty());
+                for b in 0..count {
+                    let expected =
+                        generator.into_group() + [different, generator, -generator][b % 3];
+                    let actual = if used[b] {
+                        G2Projective::from_xy(xs[b], ys[b]).into_group()
+                    } else {
+                        G2Projective::zero()
+                    };
+                    assert!(
+                        same_point(&actual, &expected),
+                        "count={count}, bucket={b}, interleaved={interleaved}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "msm-g2-inverse-bench")]
+    #[test]
+    fn g2_inverse_lanes_preserve_queue_spills_and_reinsertion() {
+        use ark_bn254::{G2Affine, G2Projective};
+        use ark_ec::AffineRepr;
+
+        let p = G2Affine::generator();
+        let q = (p.into_group() + p).into_affine();
+        let mut additions = vec![(0, p), (0, q), (1, p), (1, p), (2, p), (2, -p)];
+        // Force the queued additions to apply the pending cancellation, then
+        // reinsert in that bucket and leave a conflict tail for final draining.
+        additions.extend(std::iter::repeat_n((3, p), BATCH + 2));
+        additions.push((2, q));
+        additions.extend(std::iter::repeat_n((4, p), 8));
+        let mut expected = vec![G2Projective::zero(); 5];
+        for &(bucket, point) in &additions {
+            expected[bucket as usize] += point;
+        }
+        for interleaved in [false, true] {
+            let mut buckets = AffineBuckets::<G2Projective>::new(5);
+            buckets.interleaved_inverse = interleaved;
+            for &(bucket, point) in &additions {
+                let (x, y) = point.xy().unwrap();
+                buckets.add(bucket, x, y);
+            }
+            let (xs, ys, used, side) = buckets.finish();
+            assert!(!side[3].is_zero());
+            assert!(!side[4].is_zero());
+            for (b, expected) in expected.iter().enumerate() {
+                let mut actual: G2Projective = side[b].into();
+                if used[b] {
+                    actual += G2Projective::from_xy(xs[b], ys[b]);
+                }
+                assert!(
+                    same_point(&actual, expected),
+                    "bucket={b}, interleaved={interleaved}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn booth_digits_reconstruct_scalar() {

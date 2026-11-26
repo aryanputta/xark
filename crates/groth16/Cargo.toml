@@ -10,6 +10,10 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 
+[features]
+# Benchmark the dependency chains in G2 affine batch inversion.
+msm-g2-inverse-bench = []
+
 [dependencies]
 # Kept explicit for default-features = false; bump on release.
 xark-ir = { path = "../ir", version = "0.5.0", default-features = false }
