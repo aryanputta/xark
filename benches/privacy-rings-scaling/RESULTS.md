@@ -38,6 +38,8 @@ The same binaries ran two reversed pairs with 60 fresh proofs per arm and four w
 
 One-minute load across the follow-up arm boundaries was 12.23–60.08. Escrow has two same-host measurements per build from the original pairs. Withdrawal needs a controlled-host run before drawing a performance conclusion.
 
+The same-binary withdrawal control used the `e7b54f3` release example for both arms. Both verifiers accepted all 80 proofs across the two reversed pairs. The two paired median differences were +7.6% and −16.9%, and the p95 differences were +15.0% and −26.8%. One-minute load across the arm boundaries was 24.77–78.20. These measurements quantify run-to-run variation under load.
+
 ## Replay
 
 Use the [fixture setup and scheduling instructions](README.md). Check the fixture files against the [SHA-256 manifest](fixture-sha256.txt). The manifest contains file fingerprints. Build `e7b54f3` and `6c8ed90` in separate checkouts or target directories.

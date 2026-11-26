@@ -16,7 +16,8 @@ import statistics
 import subprocess
 import time
 
-PROFILES = (("one-worker", 1, 1), ("two-workers", 1, 2), ("two-processes", 2, 1))
+TWO_WORKERS = ("two-workers", 1, 2)
+PROFILES = (("one-worker", 1, 1), TWO_WORKERS, ("two-processes", 2, 1))
 SHARED_PROFILES = (*PROFILES[1:], ("shared-resident", 1, 2))
 WORKLOADS = ("escrow", "withdrawal")
 INPUTS = (
@@ -36,13 +37,15 @@ SHARED_VERIFIED = "shared resident proof lanes verified: two one-thread pools"
 
 def verified_samples(log, expected, *, shared=False):
     text = log.read_text()
-    timings = [float(value) for value in TIMING.findall(text)]
+    matches = list(TIMING.finditer(text))
+    prefix = text[: matches[0].start()].splitlines() if matches else []
+    timings = [float(match[1]) for match in matches]
     if (
         len(timings) != expected
-        or any(value <= 0 for value in timings)
-        or REJECTION not in text
-        or "witness row checker: compiled" not in text
-        or (shared and SHARED_VERIFIED not in text.splitlines())
+        or any(not math.isfinite(value) or value <= 0 for value in timings)
+        or REJECTION not in prefix
+        or "witness row checker: compiled" not in prefix
+        or (shared and SHARED_VERIFIED not in prefix)
     ):
         raise RuntimeError(f"missing verification or timing evidence in {log}")
     return timings
@@ -100,7 +103,7 @@ def run_arm(binary, fixture, destination, profile, samples, shared_study):
     )
     logs = [destination / f"worker-{worker}.log" for worker in range(1, processes + 1)]
     children = []
-    peak_rss = []
+    resource_usage = []
     statuses = []
     with ExitStack() as cleanup:
         handles = [cleanup.enter_context(log.open("wb")) for log in logs]
@@ -120,9 +123,7 @@ def run_arm(binary, fixture, destination, profile, samples, shared_study):
                 _, status, usage = os.wait4(child.pid, 0)
                 child.returncode = os.waitstatus_to_exitcode(status)
                 statuses.append(child.returncode)
-                peak_rss.append(
-                    usage.ru_maxrss * (1 if platform.system() == "Darwin" else 1024)
-                )
+                resource_usage.append(usage)
             makespan = time.perf_counter() - start
         finally:
             for child in children:
@@ -143,7 +144,18 @@ def run_arm(binary, fixture, destination, profile, samples, shared_study):
         "p95_ms": round(timings[math.ceil(len(timings) * 0.95) - 1] * 1000, 3),
         "verified_makespan_s": round(makespan, 3),
         "verified_proofs_s": round(samples / makespan, 4),
-        "worker_peak_rss_sum_mib": round(sum(peak_rss) / 1024**2, 3),
+        "worker_peak_rss_sum_mib": round(
+            sum(usage.ru_maxrss for usage in resource_usage)
+            * (1 if platform.system() == "Darwin" else 1024)
+            / 1024**2,
+            3,
+        ),
+        "worker_user_cpu_s": round(sum(usage.ru_utime for usage in resource_usage), 6),
+        "worker_system_cpu_s": round(
+            sum(usage.ru_stime for usage in resource_usage), 6
+        ),
+        "worker_voluntary_switches": sum(usage.ru_nvcsw for usage in resource_usage),
+        "worker_involuntary_switches": sum(usage.ru_nivcsw for usage in resource_usage),
         "one_min_load_start": round(load_start, 3),
         "one_min_load_end": round(os.getloadavg()[0], 3),
     }
@@ -157,11 +169,29 @@ def run_arm(binary, fixture, destination, profile, samples, shared_study):
     return metrics
 
 
+def arm_orders(binary, baseline, profiles):
+    if baseline is not None:
+        pair = [
+            (TWO_WORKERS, "baseline", baseline),
+            (TWO_WORKERS, "candidate", binary),
+        ]
+        yield pair
+        yield pair[::-1]
+        return
+    for rotation in range(len(profiles)):
+        order = profiles[rotation:] + profiles[:rotation]
+        yield [(profile, None, binary) for profile in order]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
     parser.add_argument("fixtures", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--against", type=Path, help="baseline binary for a reversed-order A/B"
+    )
+    parser.add_argument("--fixture", choices=WORKLOADS, help="run one pinned fixture")
     parser.add_argument(
         "--samples", type=int, default=20, help="even sample count per arm"
     )
@@ -173,12 +203,18 @@ def main():
     args = parser.parse_args()
     if args.samples < 2 or args.samples % 2:
         parser.error("--samples must be an even integer of at least two")
+    if args.against is not None and args.shared_resident:
+        parser.error("--against uses serial proofs with two Rayon threads")
     if platform.system() not in {"Darwin", "Linux"}:
         parser.error("run on Linux or macOS")
     binary, fixtures = args.binary.resolve(), args.fixtures.resolve()
+    baseline = args.against.resolve() if args.against is not None else None
+    workloads = (args.fixture,) if args.fixture else WORKLOADS
     paths = [binary] + [
-        fixtures / workload / name for workload in WORKLOADS for name in INPUTS
+        fixtures / workload / name for workload in workloads for name in INPUTS
     ]
+    if baseline is not None:
+        paths.append(baseline)
     fingerprints = {str(path): sha256(path) for path in paths}
     args.output.mkdir()
     (args.output / "host.json").write_text(
@@ -186,6 +222,11 @@ def main():
             {
                 "platform": platform.platform(),
                 "logical_cpus": os.cpu_count(),
+                "allowed_cpus": (
+                    sorted(os.sched_getaffinity(0))
+                    if hasattr(os, "sched_getaffinity")
+                    else None
+                ),
                 "sha256": fingerprints,
             },
             indent=2,
@@ -194,17 +235,16 @@ def main():
     )
     rows = []
     profiles = SHARED_PROFILES if args.shared_resident else PROFILES
-    for rotation in range(len(profiles)):
-        order = profiles[rotation:] + profiles[:rotation]
-        workloads = WORKLOADS if rotation % 2 == 0 else WORKLOADS[::-1]
-        for workload in workloads:
-            for position, profile in enumerate(order, 1):
+    for rotation, order in enumerate(arm_orders(binary, baseline, profiles), 1):
+        fixture_order = workloads if rotation % 2 else workloads[::-1]
+        for workload in fixture_order:
+            for position, (profile, variant, executable) in enumerate(order, 1):
                 name, processes, threads = profile
-                label = f"{workload}-{rotation + 1}-{name}"
+                label = f"{workload}-{rotation}-{variant or name}"
                 destination = args.output / label
                 destination.mkdir()
                 metrics = run_arm(
-                    binary,
+                    executable,
                     fixtures / workload,
                     destination,
                     profile,
@@ -214,11 +254,12 @@ def main():
                 rows.append(
                     {
                         "workload": workload,
-                        "rotation": rotation + 1,
+                        "rotation": rotation,
                         "position": position,
                         "profile": name,
                         "processes": processes,
                         "threads_per_process": threads,
+                        **({"variant": variant} if variant else {}),
                         **metrics,
                     }
                 )

@@ -24,3 +24,13 @@ Each configuration measures 20 proofs by default. Use an even `--samples` to rai
 Pass `--shared-resident --samples 100` to compare three schedules at a fixed two-thread proving budget. The two original two-thread arms run alongside two concurrent proof lanes in one process. Each lane uses a private one-thread Rayon pool and borrows the same loaded key, circuit, and solved witness. Every measured proof is row-checked and verified with both verifiers. Both lanes check the changed statement.
 
 In this comparison, `warm_batch_ms` measures from the start of a preloaded batch to the last proof and `warm_batch_completion_p95_ms` measures the 95th-percentile completion from that same start. These clocks include the time each proof waits for a lane and stop before verification. The two-process arm has independent clocks and its batch completion columns are empty. Compare all three arms using verified makespan. The shared process reports one process peak RSS, and summing the separate process peaks gives an upper bound on their aggregate RSS.
+
+To compare two release builds, pass the candidate as the first argument and the baseline as `--against`. The runner uses two Rayon threads for one proof at a time, then reverses binary order for the second pair. Both binaries are fingerprinted before and after the run. Use the same binary for both arguments to measure host variation before interpreting an A/B.
+
+```sh
+python3 benches/privacy-rings-scaling/run.py \
+  /path/to/candidate/bench_prove /path/to/pinned-fixtures /path/to/new-output \
+  --against /path/to/baseline/bench_prove --fixture withdrawal --samples 60
+```
+
+On Linux, run under `taskset` with two available CPU IDs to give each arm the same affinity. The host receipt records that CPU set. Per-arm summaries also record total user and system CPU seconds and voluntary and involuntary context switches from the worker processes. These counters cover process startup through verification. Compare them with wall time and load readings when diagnosing timing variation.
