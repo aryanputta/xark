@@ -678,9 +678,13 @@ def run_suite(args):
         iden3 = export / "iden3"
         vector = export / "queries.bin"
         if set(competitors) & {"gnark", "rapidsnark"}:
-            iden3.mkdir()
+            # The exporter creates the private directory and refuses existing paths.
             invoke(
                 (bench, "export-iden3", circuit, fixture, iden3), f"{workload}-iden3"
+            )
+            require(
+                all((iden3 / name).is_file() for name in ("circuit.r1cs", "witness.wtns")),
+                f"{workload} export did not produce both iden3 artifacts",
             )
         if set(competitors) & QUERY.keys():
             invoke(
