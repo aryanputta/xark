@@ -423,11 +423,19 @@ pub(crate) fn run<const FIXED: bool>(args: &[String]) {
         );
     }
     let (expected, oracle) = super::timed(|| G2Projective::msm_bigint(bases, &scalars));
-    let baseline = || super::timed(|| msm::msm::<G2Projective>(bases, &scalars));
+    let baseline = || {
+        #[cfg(feature = "msm-g2-no-gather-bench")]
+        msm::set_bench_g2_no_gather(false);
+        super::timed(|| msm::msm::<G2Projective>(bases, &scalars))
+    };
     let candidate = || {
+        #[cfg(feature = "msm-g2-no-gather-bench")]
+        msm::set_bench_g2_no_gather(std::env::var("BENCH_G2_NO_GATHER").as_deref() == Ok("1"));
         let start = Instant::now();
         let (recoded, recode) = super::timed(|| cache.recode::<FIXED>(&recoder, &scalars));
         let (point, msm) = super::timed(|| msm::msm::<G2Projective>(&cache.points, &recoded));
+        #[cfg(feature = "msm-g2-no-gather-bench")]
+        msm::set_bench_g2_no_gather(false);
         drop(recoded);
         let total = start.elapsed();
         (point, CandidateTiming { total, recode, msm })
@@ -454,7 +462,7 @@ pub(crate) fn run<const FIXED: bool>(args: &[String]) {
     }
     let rounding = if FIXED { "fixed-limb" } else { "division" };
     println!(
-        "query msm B2 cached GLS verified: terms={} threads={} samples={samples} warmups={warmups} subgroup_points={} xark_glv={} xark_batch_affine={} table_payload_bytes={} table_cap_bytes={TABLE_CAP_BYTES} scalar_scratch_bytes={} recoder_setup_ns={} prepare_ns={} rounding={rounding} fixture_load_ns={} subgroup_check_ns={} oracle_ns={}",
+        "query msm B2 cached GLS verified: terms={} threads={} samples={samples} warmups={warmups} subgroup_points={} xark_glv={} xark_batch_affine={} table_payload_bytes={} table_cap_bytes={TABLE_CAP_BYTES} scalar_scratch_bytes={} recoder_setup_ns={} prepare_ns={} rounding={rounding} fixture_load_ns={} subgroup_check_ns={} oracle_ns={} g2_no_gather={}",
         bases.len(),
         rayon::current_num_threads(),
         bases.len(),
@@ -467,6 +475,7 @@ pub(crate) fn run<const FIXED: bool>(args: &[String]) {
         fixture_load.as_nanos(),
         subgroup_check.as_nanos(),
         oracle.as_nanos(),
+        std::env::var("BENCH_G2_NO_GATHER").as_deref() == Ok("1"),
     );
     for (index, (baseline_first, baseline, candidate)) in timings.into_iter().enumerate() {
         let first = if baseline_first {
@@ -482,6 +491,56 @@ pub(crate) fn run<const FIXED: bool>(args: &[String]) {
             candidate.recode.as_nanos(),
             candidate.msm.as_nanos(),
         );
+    }
+}
+
+#[cfg(feature = "msm-g2-no-gather-bench")]
+pub(crate) fn run_gather_pairs(args: &[String]) {
+    let [xbc_path, pk_path, directory, options @ ..] = args else {
+        panic!(
+            "usage: bench_prove query-msm-b2-cached-gls-gather-paired XBC KEY REQUEST_DIR [samples] [warmups]"
+        );
+    };
+    let (samples, warmups) = super::counts(options).unwrap_or_else(|reason| panic!("{reason}"));
+    assert!(!super::super::tracking(), "set BENCH_TIME=1 to time B2");
+    let (pk, scalars) = super::load(xbc_path, pk_path, Path::new(directory));
+    let bases = &pk.b_g2_query;
+    check_subgroup(bases, false).expect("validate all original G2 bases");
+    let cache = CachedImages::new(bases).expect("prepare public G2 images");
+    let recoded = cache.recode::<true>(&Recoder::new(), &scalars);
+    let expected = G2Projective::msm_bigint(bases, &scalars);
+    let measure = |no_gather: bool| {
+        msm::set_bench_g2_no_gather(no_gather);
+        let result = super::timed(|| msm::msm::<G2Projective>(&cache.points, &recoded));
+        msm::set_bench_g2_no_gather(false);
+        result
+    };
+    println!(
+        "query msm B2 cached GLS gather paired verified: terms={} threads={} samples={samples} warmups={warmups} table_payload_bytes={}",
+        bases.len(),
+        rayon::current_num_threads(),
+        cache.points.len() * size_of::<G2Affine>()
+    );
+    for iteration in 0..(samples + warmups) {
+        let no_gather_first = iteration % 2 == 0;
+        let first = measure(no_gather_first);
+        let second = measure(!no_gather_first);
+        let (gather, no_gather) = if no_gather_first {
+            (second, first)
+        } else {
+            (first, second)
+        };
+        assert!(msm::same_point(&gather.0, &expected));
+        assert!(msm::same_point(&no_gather.0, &expected));
+        if iteration >= warmups {
+            println!(
+                "query msm B2 cached GLS gather pair={} no_gather_first={} gather_ns={} no_gather_ns={}",
+                iteration + 1 - warmups,
+                no_gather_first,
+                gather.1.as_nanos(),
+                no_gather.1.as_nanos()
+            );
+        }
     }
 }
 

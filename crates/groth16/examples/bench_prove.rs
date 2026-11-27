@@ -64,6 +64,10 @@
 //! GLS warm proofs, including all on-curve and subgroup checks.
 //! `BENCH_SHARED_B_SCALARS=1` with `msm-b-shared-bench` shares a canonical
 //! scalar vector across the two unchunked B queries for one CPU proof.
+//! `BENCH_G2_NO_GATHER=1` with `msm-g2-no-gather-bench` suppresses the
+//! per-class G2 point copy in cached GLS runs for a focused memory trade-off.
+//! `query-msm-b2-cached-gls-gather-paired` isolates that copy in alternating
+//! same-process B2 pairs and checks each output against Arkworks.
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
 //! Arkworks reference sums for a same-input benchmark. Use reproducible test
 //! fixtures and keep the witness-bearing export in local scratch storage.
@@ -422,6 +426,45 @@ fn main() {
         TRACK.store(false, Relaxed);
     }
     let args: Vec<String> = std::env::args().collect();
+    if args
+        .get(1)
+        .is_some_and(|mode| mode == "query-msm-b2-cached-gls-gather-paired")
+    {
+        #[cfg(feature = "msm-g2-no-gather-bench")]
+        {
+            query_msm::cached_gls_b2::run_gather_pairs(&args[2..]);
+            return;
+        }
+        #[cfg(not(feature = "msm-g2-no-gather-bench"))]
+        panic!("gather pairs require msm-g2-no-gather-bench");
+    }
+    #[cfg(feature = "msm-g2-no-gather-bench")]
+    {
+        let enabled = match std::env::var("BENCH_G2_NO_GATHER").as_deref() {
+            Err(std::env::VarError::NotPresent) | Ok("0") => false,
+            Ok("1") => true,
+            _ => panic!("BENCH_G2_NO_GATHER must be 0 or 1"),
+        };
+        if enabled {
+            let cached_query = args.get(1).is_some_and(|mode| {
+                mode == "query-msm-b2-cached-gls" || mode == "query-msm-b2-cached-gls-reciprocal"
+            });
+            let cached_request = args.get(1).is_some_and(|mode| mode == "warm-requests")
+                && args.get(4).is_some_and(|mode| mode == "gls");
+            let cached_warm = args.get(1).is_some_and(|mode| mode == "warm")
+                && std::env::var("BENCH_G2_CACHED_GLS").as_deref() == Ok("1");
+            assert!(
+                cached_query || cached_request || cached_warm,
+                "BENCH_G2_NO_GATHER requires cached GLS mode"
+            );
+        }
+        xark_groth16::msm::set_bench_g2_no_gather(enabled);
+    }
+    #[cfg(not(feature = "msm-g2-no-gather-bench"))]
+    assert!(
+        std::env::var_os("BENCH_G2_NO_GATHER").is_none(),
+        "BENCH_G2_NO_GATHER requires msm-g2-no-gather-bench"
+    );
     if args.get(1).is_some_and(|mode| mode == "warm-requests") {
         #[cfg(feature = "msm-g2-shifted-bench")]
         {

@@ -105,6 +105,16 @@ pub static BATCH_AFFINE: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 /// `examples/bench_msm.rs` can compare.
 pub static GLV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+#[cfg(feature = "msm-g2-no-gather-bench")]
+static G2_NO_GATHER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Benchmark-only public process setting, fixed before proving requests start.
+#[cfg(feature = "msm-g2-no-gather-bench")]
+#[doc(hidden)]
+pub fn set_bench_g2_no_gather(enabled: bool) {
+    G2_NO_GATHER.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Additions per shared inversion.
 const BATCH: usize = 512;
 
@@ -603,13 +613,19 @@ fn pippenger_core<G: SwCurve>(
 
     // With several windows, gather this class's points contiguously once so every
     // window pass streams them sequentially instead of striding the shared array.
-    let gathered: Option<Vec<G::Affine>> = (windows > 1 && !identity).then(|| {
-        entries
-            .par_iter()
-            .with_min_len(4096)
-            .map(|&e| bases[(e & !NEG) as usize])
-            .collect()
-    });
+    #[cfg(feature = "msm-g2-no-gather-bench")]
+    let skip_g2_gather = G::BaseField::extension_degree() == 2
+        && G2_NO_GATHER.load(std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(feature = "msm-g2-no-gather-bench"))]
+    let skip_g2_gather = false;
+    let gathered: Option<Vec<G::Affine>> =
+        (windows > 1 && !identity && !skip_g2_gather).then(|| {
+            entries
+                .par_iter()
+                .with_min_len(4096)
+                .map(|&e| bases[(e & !NEG) as usize])
+                .collect()
+        });
 
     let sums: Vec<G> = (0..windows * parts)
         .into_par_iter()
@@ -791,6 +807,51 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
 mod tests {
     use super::*;
     use ark_ff::Zero;
+
+    #[cfg(feature = "msm-g2-no-gather-bench")]
+    #[test]
+    fn g2_no_gather_preserves_group_result_with_mixed_classes() {
+        use ark_bn254::{G1Affine, G1Projective, G2Affine, G2Projective};
+        use ark_ec::{AffineRepr, VariableBaseMSM};
+
+        let generator = G2Affine::generator();
+        let bases: Vec<_> = (0..1_024)
+            .map(|i| {
+                if i % 31 == 0 {
+                    G2Affine::zero()
+                } else {
+                    generator.mul_bigint([i as u64 + 1]).into_affine()
+                }
+            })
+            .collect();
+        let scalars: Vec<_> = (0..bases.len())
+            .map(|i| {
+                if i % 29 == 0 {
+                    Fr::from(0u64).into_bigint()
+                } else {
+                    Fr::from((i as u64 * 17 + 3) % 65_521).into_bigint()
+                }
+            })
+            .collect();
+        let oracle = G2Projective::msm_bigint(&bases, &scalars);
+        set_bench_g2_no_gather(false);
+        let baseline = msm::<G2Projective>(&bases, &scalars);
+        set_bench_g2_no_gather(true);
+        let candidate = msm::<G2Projective>(&bases, &scalars);
+        set_bench_g2_no_gather(false);
+        assert_eq!(baseline, oracle);
+        assert_eq!(candidate, oracle);
+
+        let g1 = G1Affine::generator();
+        let g1_bases: Vec<_> = (0..bases.len())
+            .map(|i| g1.mul_bigint([i as u64 + 1]).into_affine())
+            .collect();
+        let g1_baseline = msm::<G1Projective>(&g1_bases, &scalars);
+        set_bench_g2_no_gather(true);
+        let g1_candidate = msm::<G1Projective>(&g1_bases, &scalars);
+        set_bench_g2_no_gather(false);
+        assert_eq!(g1_candidate, g1_baseline);
+    }
 
     #[cfg(feature = "msm-g2-endpoint-bench")]
     #[test]

@@ -11,6 +11,7 @@ homepage.workspace = true
 rust-version.workspace = true
 
 [features]
+msm-g2-no-gather-bench = []
 msm-g2-endpoint-bench = []
 msm-g2-shifted-bench = []
 msm-b-shared-bench = []
