@@ -12,6 +12,7 @@ rust-version.workspace = true
 
 [features]
 msm-access-audit = []
+msm-g2-grouped-audit = []
 msm-g2-endpoint-bench = []
 msm-g2-shifted-bench = []
 msm-b-shared-bench = []

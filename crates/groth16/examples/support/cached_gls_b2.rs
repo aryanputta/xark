@@ -782,6 +782,11 @@ mod tests {
                         cached_access.affine_adds + cached_access.projective_updates,
                         cached_access.window_base_reads
                     );
+                    #[cfg(feature = "msm-g2-grouped-audit")]
+                    for access in [ordinary_access, cached_access] {
+                        assert_eq!(access.place_conflicts, 0);
+                        assert_eq!(access.spill_adds, 0);
+                    }
                     eprintln!(
                         "executed synthetic n={n} {name}: ordinary={ordinary_access:?} cached_gls={cached_access:?}"
                     );
@@ -855,8 +860,73 @@ mod tests {
                         cached_access.window_base_reads as usize,
                         shape(&recoded).bucket_updates
                     );
+                    #[cfg(feature = "msm-g2-grouped-audit")]
+                    for access in [ordinary_access, cached_access] {
+                        assert_eq!(access.place_conflicts, 0);
+                        assert_eq!(access.spill_adds, 0);
+                    }
                     eprintln!(
                         "executed pinned synthetic fixture {circuit}: ordinary={ordinary_access:?} cached_gls={cached_access:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    // Deliberately ignored: this is a local same-binary timing screen, not a
+    // stable-host performance claim. Set the pinned synthetic fixture root.
+    #[cfg(feature = "msm-g2-grouped-audit")]
+    #[test]
+    #[ignore]
+    fn screen_grouped_cached_gls_b2_on_pinned_fixtures() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                msm::set_bench_g2_grouped_buckets(true);
+            }
+        }
+        let _reset = Reset;
+        let root = std::env::var("XARK_SYNTHETIC_FIXTURE_ROOT")
+            .expect("set XARK_SYNTHETIC_FIXTURE_ROOT to verified synthetic fixtures");
+        for circuit in ["escrow", "withdrawal"] {
+            let root = Path::new(&root);
+            let reference = root.join("reference").join(circuit);
+            let requests = root.join("requests").join(circuit).join("1");
+            let request: Vec<_> = std::fs::read_dir(requests)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(request.len(), 1);
+            let (key, scalars) = super::super::load(
+                reference.join("circuit.xbc").to_str().unwrap(),
+                reference.join("test-key.bin").to_str().unwrap(),
+                &request[0],
+            );
+            let scalars = Zeroizing::new(scalars);
+            let cache = CachedImages::new(&key.b_g2_query).unwrap();
+            let recoded = cache.recode::<true>(&Recoder::new(), &scalars);
+            let expected = G2Projective::msm_bigint(&key.b_g2_query, &scalars);
+            for pair in 0..=10 {
+                let grouped_first = pair % 2 == 0;
+                let timed = |grouped| {
+                    msm::set_bench_g2_grouped_buckets(grouped);
+                    let start = Instant::now();
+                    let point =
+                        std::hint::black_box(msm::msm::<G2Projective>(&cache.points, &recoded));
+                    let elapsed = start.elapsed().as_nanos();
+                    assert!(msm::same_point(&point, &expected));
+                    elapsed
+                };
+                let (baseline_ns, grouped_ns) = if grouped_first {
+                    let grouped = timed(true);
+                    (timed(false), grouped)
+                } else {
+                    let baseline = timed(false);
+                    (baseline, timed(true))
+                };
+                if pair > 0 {
+                    eprintln!(
+                        "grouped B2 screen circuit={circuit} pair={pair} grouped_first={grouped_first} baseline_ns={baseline_ns} grouped_ns={grouped_ns}"
                     );
                 }
             }

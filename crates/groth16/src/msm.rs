@@ -172,6 +172,16 @@ static G2_TRIM_INVERSE_ENDPOINTS: std::sync::atomic::AtomicBool =
 static G2_SPARSE_ENDOMORPHISM: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(feature = "msm-g2-grouped-audit")]
+static G2_GROUPED_BUCKETS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Toggle experimental G2 bucket grouping in one benchmark binary.
+#[cfg(feature = "msm-g2-grouped-audit")]
+#[doc(hidden)]
+pub fn set_bench_g2_grouped_buckets(enabled: bool) {
+    G2_GROUPED_BUCKETS.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Toggle endpoint elision in G2 affine batch inversion before benchmarking.
 #[cfg(feature = "msm-g2-endpoint-bench")]
 #[doc(hidden)]
@@ -698,15 +708,77 @@ fn pippenger_core<G: SwCurve>(
                 && hi - lo >= 4 * nb
             {
                 let mut ab = AffineBuckets::<G>::new(nb);
-                for (k, &d) in row.iter().enumerate().take(hi).skip(lo) {
-                    if d == 0 {
-                        continue;
+                if cfg!(feature = "msm-g2-grouped-audit")
+                    && G::BaseField::extension_degree() == 2
+                    && {
+                        #[cfg(feature = "msm-g2-grouped-audit")]
+                        {
+                            G2_GROUPED_BUCKETS.load(std::sync::atomic::Ordering::Relaxed)
+                        }
+                        #[cfg(not(feature = "msm-g2-grouped-audit"))]
+                        {
+                            false
+                        }
                     }
-                    audit_inc!(WINDOW_BASE_READS);
-                    let p = base_of(k);
-                    if let Some((x, y)) = G::xy(p) {
-                        audit_inc!(AFFINE_ADDS);
-                        ab.add((d.unsigned_abs() - 1) as u32, x, if d < 0 { -y } else { y });
+                {
+                    // Experimental counting-sort layout: group signed-window
+                    // positions by bucket, then offer at most one position per
+                    // bucket in each inversion round. All scratch is private to
+                    // this MSM task and wiped when it returns or unwinds.
+                    let mut counts = Zeroizing::new(vec![0usize; nb]);
+                    for &d in &row[lo..hi] {
+                        if d != 0 {
+                            counts[(d.unsigned_abs() - 1) as usize] += 1;
+                        }
+                    }
+                    let mut starts = Zeroizing::new(vec![0usize; nb + 1]);
+                    for b in 0..nb {
+                        starts[b + 1] = starts[b] + counts[b];
+                    }
+                    let mut cursor = Zeroizing::new(vec![0usize; nb]);
+                    cursor.copy_from_slice(&starts[..nb]);
+                    // Keep scratch capacity independent of nonzero digit count.
+                    let mut positions = Zeroizing::new(vec![0usize; hi - lo]);
+                    for (k, &d) in row.iter().enumerate().take(hi).skip(lo) {
+                        if d != 0 {
+                            let b = (d.unsigned_abs() - 1) as usize;
+                            positions[cursor[b]] = k;
+                            cursor[b] += 1;
+                        }
+                    }
+                    let layers = counts.iter().copied().max().unwrap_or(0);
+                    for layer in 0..layers {
+                        for b in 0..nb {
+                            if layer >= counts[b] {
+                                continue;
+                            }
+                            let k = positions[starts[b] + layer];
+                            let d = row[k];
+                            audit_inc!(WINDOW_BASE_READS);
+                            let p = base_of(k);
+                            if let Some((x, y)) = G::xy(p) {
+                                audit_inc!(AFFINE_ADDS);
+                                ab.add(b as u32, x, if d < 0 { -y } else { y });
+                            }
+                        }
+                        // The next layer can visit the same bucket. Close the
+                        // current inversion batch so it cannot conflict with
+                        // the next layer's point for that bucket.
+                        if !ab.batch.is_empty() {
+                            ab.flush();
+                        }
+                    }
+                } else {
+                    for (k, &d) in row.iter().enumerate().take(hi).skip(lo) {
+                        if d == 0 {
+                            continue;
+                        }
+                        audit_inc!(WINDOW_BASE_READS);
+                        let p = base_of(k);
+                        if let Some((x, y)) = G::xy(p) {
+                            audit_inc!(AFFINE_ADDS);
+                            ab.add((d.unsigned_abs() - 1) as u32, x, if d < 0 { -y } else { y });
+                        }
                     }
                 }
                 let (bx, by, used, side) = ab.finish();
