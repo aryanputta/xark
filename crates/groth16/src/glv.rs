@@ -167,8 +167,41 @@ pub fn fits(k: &Scalar) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ark_ec::PrimeGroup;
     use ark_ff::{Field, UniformRand, Zero};
+    use num_bigint::{BigInt, Sign};
     use rand::SeedableRng;
+
+    fn signed_component(positive: bool, magnitude: Scalar) -> BigInt {
+        let value =
+            BigInt::from_biguint(Sign::Plus, BigUint::from_bytes_le(&magnitude.to_bytes_le()));
+        if positive { value } else { -value }
+    }
+
+    // Independent exact-integer version of the lattice rounding in Glv::decompose.
+    // This intentionally uses division and arbitrary precision, not the fixed-limb path.
+    fn exact_g1_split(k: Fr) -> (BigInt, BigInt) {
+        let c = <ark_bn254::g1::Config as GLVConfig>::SCALAR_DECOMP_COEFFS;
+        let r = BigInt::from_biguint(Sign::Plus, Fr::MODULUS.into());
+        let k = BigInt::from_biguint(Sign::Plus, k.into_bigint().into());
+        let coeff = |i: usize| {
+            let value = BigInt::from_biguint(Sign::Plus, c[i].1.into());
+            if c[i].0 { value } else { -value }
+        };
+        let round = |numerator: BigInt| -> BigInt {
+            let mut quotient = &numerator / &r;
+            let remainder = numerator % &r;
+            if &remainder + &remainder > r {
+                quotient += 1;
+            }
+            quotient
+        };
+        let beta1 = round(&k * coeff(3));
+        let beta2 = round(-&k * coeff(1));
+        let k1 = &k - &beta1 * coeff(0) - &beta2 * coeff(2);
+        let k2 = -&beta1 * coeff(1) - &beta2 * coeff(3);
+        (k1, k2)
+    }
 
     fn check<C: GLVConfig<ScalarField = Fr>>(glv: &Glv, k: Fr) {
         let ((s1, k1), (s2, k2)) = glv.decompose(&k.into_bigint());
@@ -197,5 +230,78 @@ mod tests {
             check::<ark_bn254::g1::Config>(g1(), k);
             check::<ark_bn254::g2::Config>(g2(), k);
         }
+    }
+
+    #[test]
+    fn g1_split_transforms_to_g2_against_exact_integer_reference() {
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(0xB12B2);
+        let lambda1 = <ark_bn254::g1::Config as GLVConfig>::LAMBDA;
+        let lambda2 = <ark_bn254::g2::Config as GLVConfig>::LAMBDA;
+        assert_eq!(lambda1 + lambda2 + Fr::from(1u64), Fr::zero());
+        let edge = [
+            Fr::zero(),
+            Fr::from(1u64),
+            -Fr::from(1u64),
+            Fr::from(2u64).pow([127u64]),
+            Fr::from(2u64).pow([128u64]),
+            Fr::from(2u64).pow([253u64]),
+            lambda1,
+            lambda2,
+        ];
+        let c = <ark_bn254::g1::Config as GLVConfig>::SCALAR_DECOMP_COEFFS;
+        let bound_a: BigUint = [0, 2].into_iter().map(|i| BigUint::from(c[i].1)).sum();
+        let bound_b: BigUint = [1, 3].into_iter().map(|i| BigUint::from(c[i].1)).sum();
+        let mut alternate_splits = 0usize;
+        let mut wide_g2_first = 0usize;
+        for (index, k) in edge
+            .into_iter()
+            .chain((0..20_000).map(|_| Fr::rand(&mut rng)))
+            .enumerate()
+        {
+            let ((s1, a), (s2, b)) = g1().decompose(&k.into_bigint());
+            let (a, b) = (signed_component(s1, a), signed_component(s2, b));
+            let (reference_a, reference_b) = exact_g1_split(k);
+            let ((ark_s1, ark_a), (ark_s2, ark_b)) =
+                <ark_bn254::g1::Config as GLVConfig>::scalar_decomposition(k);
+            assert_eq!(
+                signed_component(ark_s1, ark_a.into_bigint()),
+                reference_a,
+                "scalar index {index}"
+            );
+            assert_eq!(
+                signed_component(ark_s2, ark_b.into_bigint()),
+                reference_b,
+                "scalar index {index}"
+            );
+            if a != reference_a || b != reference_b {
+                alternate_splits += 1;
+            }
+            // Arkworks uses signed quotient rounding while the fixed-limb path
+            // rounds magnitudes. They may choose neighboring lattice points.
+            // Each component must stay within one step of each basis vector;
+            // exact component equality is not required for reconstruction.
+            assert!((&a - &reference_a).magnitude() <= &bound_a);
+            assert!((&b - &reference_b).magnitude() <= &bound_b);
+            let (g2a, g2b) = (&a - &b, -&b);
+            assert!(g2a.bits() <= 129 && g2b.bits() <= 128);
+            wide_g2_first += usize::from(g2a.bits() > 128);
+            let r = BigInt::from_biguint(Sign::Plus, Fr::MODULUS.into());
+            let mod_fr = |x: &BigInt| {
+                let canonical = ((x % &r) + &r) % &r;
+                Fr::from_bigint(ark_ff::BigInt(limbs(&canonical.to_biguint().unwrap()))).unwrap()
+            };
+            assert_eq!(mod_fr(&g2a) + lambda2 * mod_fr(&g2b), k);
+            if index < 32 {
+                let direct = ark_bn254::G2Projective::generator().mul_bigint(k.into_bigint());
+                let transformed = ark_bn254::G2Projective::generator()
+                    .mul_bigint(mod_fr(&g2a).into_bigint())
+                    + ark_bn254::G2Projective::generator()
+                        .mul_bigint((lambda2 * mod_fr(&g2b)).into_bigint());
+                assert_eq!(direct, transformed);
+            }
+        }
+        eprintln!(
+            "alternate valid G1 lattice splits: {alternate_splits}/20008; converted G2 first component above 128 bits: {wide_g2_first}/20008"
+        );
     }
 }
