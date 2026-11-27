@@ -19,6 +19,133 @@ use ark_serialize::CanonicalSerialize;
 use rayon::prelude::*;
 use zeroize::Zeroizing;
 
+#[cfg(feature = "msm-stage-profile-bench")]
+mod stage_profile {
+    use std::cell::RefCell;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    thread_local! {
+        static ACTIVE: RefCell<Option<Arc<Counters>>> = const { RefCell::new(None) };
+    }
+    static REQUEST: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Default)]
+    pub(super) struct Counters {
+        pub classify_ns: AtomicU64,
+        pub unit_ns: AtomicU64,
+        pub glv_ns: AtomicU64,
+        pub recode_ns: AtomicU64,
+        pub gather_ns: AtomicU64,
+        pub fill_ns: AtomicU64,
+        pub flush_ns: AtomicU64,
+        pub reduce_ns: AtomicU64,
+        pub merge_ns: AtomicU64,
+        pub msm_ns: AtomicU64,
+        pub msm_calls: AtomicU64,
+        pub window_tasks: AtomicU64,
+        pub nonempty_flushes: AtomicU64,
+    }
+
+    pub(super) fn current() -> Option<Arc<Counters>> {
+        ACTIVE.with(|cell| cell.borrow().clone())
+    }
+
+    pub(super) fn add(slot: &AtomicU64, start: Instant) {
+        slot.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    pub(super) fn next_request() -> u64 {
+        REQUEST.fetch_add(1, Ordering::Relaxed)
+    }
+
+    struct Reset(Option<Arc<Counters>>);
+
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ACTIVE.with(|cell| *cell.borrow_mut() = self.0.take());
+        }
+    }
+
+    pub(super) fn task<T>(
+        request: u64,
+        label: &'static str,
+        terms: usize,
+        origin: Instant,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        // A separate opt-in marker keeps witness-derived timing and flush counts
+        // out of ordinary application logs. Use synthetic inputs only.
+        if std::env::var("XARK_MSM_STAGE_PROFILE").as_deref() != Ok("synthetic") {
+            return f();
+        }
+        let counters = Arc::new(Counters::default());
+        let previous = ACTIVE.with(|cell| cell.replace(Some(Arc::clone(&counters))));
+        let reset = Reset(previous);
+        let task_start_ns = origin.elapsed().as_nanos() as u64;
+        let started = Instant::now();
+        let value = f();
+        let task_wall_ns = started.elapsed().as_nanos() as u64;
+        let task_end_ns = origin.elapsed().as_nanos() as u64;
+        drop(reset);
+        let get = |slot: &AtomicU64| slot.load(Ordering::Relaxed);
+        println!(
+            "{{\"kind\":\"msm_stage\",\"request\":{request},\"task\":\"{label}\",\"terms\":{terms},\"rayon_threads\":{},\"task_start_ns\":{task_start_ns},\"task_end_ns\":{task_end_ns},\"task_wall_ns\":{task_wall_ns},\"msm_call_sum_ns\":{},\"classify_ns\":{},\"unit_ns\":{},\"glv_ns\":{},\"recode_ns\":{},\"gather_ns\":{},\"fill_task_sum_ns\":{},\"flush_nested_ns\":{},\"reduce_task_sum_ns\":{},\"merge_ns\":{},\"msm_calls\":{},\"window_tasks\":{},\"nonempty_flushes\":{},\"overlapping_task_sums\":true}}",
+            rayon::current_num_threads(),
+            get(&counters.msm_ns),
+            get(&counters.classify_ns),
+            get(&counters.unit_ns),
+            get(&counters.glv_ns),
+            get(&counters.recode_ns),
+            get(&counters.gather_ns),
+            get(&counters.fill_ns),
+            get(&counters.flush_ns),
+            get(&counters.reduce_ns),
+            get(&counters.merge_ns),
+            get(&counters.msm_calls),
+            get(&counters.window_tasks),
+            get(&counters.nonempty_flushes),
+        );
+        value
+    }
+}
+
+/// One identifier shared by the B1 and B2 spans of a resident proof request.
+#[doc(hidden)]
+#[inline(always)]
+pub fn next_bench_profile_request() -> u64 {
+    #[cfg(feature = "msm-stage-profile-bench")]
+    {
+        stage_profile::next_request()
+    }
+    #[cfg(not(feature = "msm-stage-profile-bench"))]
+    {
+        0
+    }
+}
+
+/// Profile only an explicitly marked synthetic B-query task.
+#[doc(hidden)]
+#[inline(always)]
+pub fn bench_profile_task<T>(
+    request: u64,
+    label: &'static str,
+    terms: usize,
+    #[cfg(feature = "msm-stage-profile-bench")] origin: std::time::Instant,
+    f: impl FnOnce() -> T,
+) -> T {
+    #[cfg(feature = "msm-stage-profile-bench")]
+    {
+        stage_profile::task(request, label, terms, origin, f)
+    }
+    #[cfg(not(feature = "msm-stage-profile-bench"))]
+    {
+        let _ = (request, label, terms);
+        f()
+    }
+}
+
 #[cfg(feature = "msm-g2-shifted-bench")]
 #[doc(hidden)]
 pub mod shifted;
@@ -149,6 +276,8 @@ struct AffineBuckets<G: SwCurve> {
     side: Vec<G::Bucket>,
     den: Vec<G::BaseField>,
     pre: Vec<G::BaseField>,
+    #[cfg(feature = "msm-stage-profile-bench")]
+    profile: Option<std::sync::Arc<stage_profile::Counters>>,
     #[cfg(feature = "msm-g2-endpoint-bench")]
     trim_inverse_endpoints: bool,
 }
@@ -166,6 +295,8 @@ impl<G: SwCurve> AffineBuckets<G> {
             side: Vec::new(),
             den: Vec::with_capacity(BATCH),
             pre: Vec::with_capacity(BATCH),
+            #[cfg(feature = "msm-stage-profile-bench")]
+            profile: None,
             #[cfg(feature = "msm-g2-endpoint-bench")]
             trim_inverse_endpoints: G::BaseField::extension_degree() == 2
                 && G2_TRIM_INVERSE_ENDPOINTS.load(std::sync::atomic::Ordering::Relaxed),
@@ -229,6 +360,10 @@ impl<G: SwCurve> AffineBuckets<G> {
     }
 
     fn flush(&mut self) {
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let start = self.profile.as_ref().map(|_| std::time::Instant::now());
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let nonempty = !self.batch.is_empty();
         #[cfg(feature = "msm-g2-endpoint-bench")]
         if self.trim_inverse_endpoints {
             self.invert_and_update::<true>();
@@ -239,6 +374,15 @@ impl<G: SwCurve> AffineBuckets<G> {
         self.invert_and_update::<false>();
         self.batch.clear();
         self.epoch = self.epoch.wrapping_add(1).max(1);
+        #[cfg(feature = "msm-stage-profile-bench")]
+        if let (Some(profile), Some(start)) = (&self.profile, start) {
+            stage_profile::add(&profile.flush_ns, start);
+            if nonempty {
+                profile
+                    .nonempty_flushes
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
     }
 
     #[inline]
@@ -492,6 +636,9 @@ fn pippenger<G: SwCurve>(
     scalars: &[Scalar],
     entries: &[u32],
     bits: usize,
+    #[cfg(feature = "msm-stage-profile-bench")] profile: Option<
+        &std::sync::Arc<stage_profile::Counters>,
+    >,
 ) -> G {
     // Fewer windows also means fewer tasks, and twice the points larger bucket
     // sweeps: measured (`examples/bench_msm.rs`), the split is 4–19% faster up
@@ -502,15 +649,37 @@ fn pippenger<G: SwCurve>(
         || entries.len() * rayon::current_num_threads() > 1 << 16
         || !GLV.load(std::sync::atomic::Ordering::Relaxed)
     {
-        return pippenger_core(bases, scalars, entries, bits, false);
+        return pippenger_core(
+            bases,
+            scalars,
+            entries,
+            bits,
+            false,
+            #[cfg(feature = "msm-stage-profile-bench")]
+            profile,
+        );
     }
     #[cfg(feature = "msm-g2-endpoint-bench")]
     if G::BaseField::extension_degree() == 2
         && G2_SPARSE_ENDOMORPHISM.load(std::sync::atomic::Ordering::Relaxed)
     {
-        return pippenger_glv::<G>(bases, scalars, entries, G::bench_sparse_endo);
+        return pippenger_glv::<G>(
+            bases,
+            scalars,
+            entries,
+            G::bench_sparse_endo,
+            #[cfg(feature = "msm-stage-profile-bench")]
+            profile,
+        );
     }
-    pippenger_glv::<G>(bases, scalars, entries, G::endo)
+    pippenger_glv::<G>(
+        bases,
+        scalars,
+        entries,
+        G::endo,
+        #[cfg(feature = "msm-stage-profile-bench")]
+        profile,
+    )
 }
 
 fn pippenger_glv<G: SwCurve>(
@@ -518,7 +687,12 @@ fn pippenger_glv<G: SwCurve>(
     scalars: &[Scalar],
     entries: &[u32],
     endomorphism: impl Fn(&G::Affine) -> G::Affine + Sync,
+    #[cfg(feature = "msm-stage-profile-bench")] profile: Option<
+        &std::sync::Arc<stage_profile::Counters>,
+    >,
 ) -> G {
+    #[cfg(feature = "msm-stage-profile-bench")]
+    let start = profile.map(|_| std::time::Instant::now());
     let glv = G::glv();
     let modulus = Fr::MODULUS;
     let n = entries.len();
@@ -545,8 +719,20 @@ fn pippenger_glv<G: SwCurve>(
                 k[2 * j + 1] = k2;
             }
         });
+    #[cfg(feature = "msm-stage-profile-bench")]
+    if let (Some(profile), Some(start)) = (profile, start) {
+        stage_profile::add(&profile.glv_ns, start);
+    }
     let ids: Vec<u32> = (0..2 * n as u32).collect();
-    pippenger_core(&pts, &sc, &ids, crate::glv::HALF_BITS, true)
+    pippenger_core(
+        &pts,
+        &sc,
+        &ids,
+        crate::glv::HALF_BITS,
+        true,
+        #[cfg(feature = "msm-stage-profile-bench")]
+        profile,
+    )
 }
 
 /// [`pippenger`] without the split. `identity`: `entries[k] == k`, so the points
@@ -557,6 +743,9 @@ fn pippenger_core<G: SwCurve>(
     entries: &[u32],
     bits: usize,
     identity: bool,
+    #[cfg(feature = "msm-stage-profile-bench")] profile: Option<
+        &std::sync::Arc<stage_profile::Counters>,
+    >,
 ) -> G {
     let n = entries.len();
     if n == 0 {
@@ -578,6 +767,8 @@ fn pippenger_core<G: SwCurve>(
     // Signed digits, computed once, stored window-major (each window pass then
     // streams one contiguous i16 row) with the entry's sign folded in.
     // Booth digits encode request scalars. Wipe them on return and unwinding.
+    #[cfg(feature = "msm-stage-profile-bench")]
+    let recode_start = profile.map(|_| std::time::Instant::now());
     let mut digits = Zeroizing::new(vec![0i16; windows * n]);
     {
         let ptr = DigitPtr(digits.as_mut_ptr());
@@ -600,9 +791,15 @@ fn pippenger_core<G: SwCurve>(
             }
         });
     }
+    #[cfg(feature = "msm-stage-profile-bench")]
+    if let (Some(profile), Some(start)) = (profile, recode_start) {
+        stage_profile::add(&profile.recode_ns, start);
+    }
 
     // With several windows, gather this class's points contiguously once so every
     // window pass streams them sequentially instead of striding the shared array.
+    #[cfg(feature = "msm-stage-profile-bench")]
+    let gather_start = profile.map(|_| std::time::Instant::now());
     let gathered: Option<Vec<G::Affine>> = (windows > 1 && !identity).then(|| {
         entries
             .par_iter()
@@ -610,10 +807,22 @@ fn pippenger_core<G: SwCurve>(
             .map(|&e| bases[(e & !NEG) as usize])
             .collect()
     });
+    #[cfg(feature = "msm-stage-profile-bench")]
+    if let (Some(profile), Some(start)) = (profile, gather_start) {
+        stage_profile::add(&profile.gather_ns, start);
+    }
 
     let sums: Vec<G> = (0..windows * parts)
         .into_par_iter()
         .map(|t| {
+            #[cfg(feature = "msm-stage-profile-bench")]
+            let fill_start = profile.map(|_| std::time::Instant::now());
+            #[cfg(feature = "msm-stage-profile-bench")]
+            if let Some(profile) = profile {
+                profile
+                    .window_tasks
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             let (w, part) = (t / parts, t % parts);
             let lo = part * part_len;
             let hi = n.min(lo + part_len);
@@ -633,6 +842,10 @@ fn pippenger_core<G: SwCurve>(
                 && hi - lo >= 4 * nb
             {
                 let mut ab = AffineBuckets::<G>::new(nb);
+                #[cfg(feature = "msm-stage-profile-bench")]
+                {
+                    ab.profile = profile.cloned();
+                }
                 for (k, &d) in row.iter().enumerate().take(hi).skip(lo) {
                     if d == 0 {
                         continue;
@@ -643,6 +856,12 @@ fn pippenger_core<G: SwCurve>(
                     }
                 }
                 let (bx, by, used, side) = ab.finish();
+                #[cfg(feature = "msm-stage-profile-bench")]
+                if let (Some(profile), Some(start)) = (profile, fill_start) {
+                    stage_profile::add(&profile.fill_ns, start);
+                }
+                #[cfg(feature = "msm-stage-profile-bench")]
+                let reduce_start = profile.map(|_| std::time::Instant::now());
                 let mut running = G::ZERO_BUCKET;
                 let mut res = G::ZERO_BUCKET;
                 for j in (0..nb).rev() {
@@ -653,6 +872,10 @@ fn pippenger_core<G: SwCurve>(
                         running += b;
                     }
                     res += &running;
+                }
+                #[cfg(feature = "msm-stage-profile-bench")]
+                if let (Some(profile), Some(start)) = (profile, reduce_start) {
+                    stage_profile::add(&profile.reduce_ns, start);
                 }
                 return res.into();
             }
@@ -675,6 +898,12 @@ fn pippenger_core<G: SwCurve>(
                     *bucket += base;
                 }
             }
+            #[cfg(feature = "msm-stage-profile-bench")]
+            if let (Some(profile), Some(start)) = (profile, fill_start) {
+                stage_profile::add(&profile.fill_ns, start);
+            }
+            #[cfg(feature = "msm-stage-profile-bench")]
+            let reduce_start = profile.map(|_| std::time::Instant::now());
             // Σ_j (j+1)·bucket[j] via the running-sum trick (2·2^(c−1) adds).
             let mut running = G::ZERO_BUCKET;
             let mut res = G::ZERO_BUCKET;
@@ -682,10 +911,16 @@ fn pippenger_core<G: SwCurve>(
                 running += b;
                 res += &running;
             }
+            #[cfg(feature = "msm-stage-profile-bench")]
+            if let (Some(profile), Some(start)) = (profile, reduce_start) {
+                stage_profile::add(&profile.reduce_ns, start);
+            }
             res.into()
         })
         .collect();
 
+    #[cfg(feature = "msm-stage-profile-bench")]
+    let merge_start = profile.map(|_| std::time::Instant::now());
     let mut total = G::zero();
     for w in (0..windows).rev() {
         for _ in 0..c {
@@ -694,6 +929,10 @@ fn pippenger_core<G: SwCurve>(
         for part in 0..parts {
             total += sums[w * parts + part];
         }
+    }
+    #[cfg(feature = "msm-stage-profile-bench")]
+    if let (Some(profile), Some(start)) = (profile, merge_start) {
+        stage_profile::add(&profile.merge_ns, start);
     }
     total
 }
@@ -704,6 +943,16 @@ const CLASS_BITS: [usize; 6] = [1, 16, 32, 64, 128, 256];
 /// `Σ sᵢ·Pᵢ` over the first `min(bases.len(), scalars.len())` pairs. Scalars are
 /// arbitrary 256-bit integers (values ≥ r are handled, e.g. `r·P = O`).
 pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
+    #[cfg(feature = "msm-stage-profile-bench")]
+    let profile = stage_profile::current();
+    #[cfg(feature = "msm-stage-profile-bench")]
+    let msm_start = profile.as_ref().map(|_| std::time::Instant::now());
+    #[cfg(feature = "msm-stage-profile-bench")]
+    if let Some(profile) = &profile {
+        profile
+            .msm_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     let n = bases.len().min(scalars.len());
     let (bases, scalars) = (&bases[..n], &scalars[..n]);
     assert!(n < NEG as usize, "MSM chunk too large");
@@ -740,6 +989,8 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
     // pool for microseconds of work.
     // Entries carry witness-dependent magnitude classes and signs. Keep the
     // buffers request-local and clear them when MSM accumulation finishes.
+    #[cfg(feature = "msm-stage-profile-bench")]
+    let classify_start = profile.as_ref().map(|_| std::time::Instant::now());
     let classes: Zeroizing<[Vec<u32>; 6]> = (0..n)
         .into_par_iter()
         .with_min_len(4096)
@@ -763,8 +1014,14 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
                 a
             },
         );
+    #[cfg(feature = "msm-stage-profile-bench")]
+    if let (Some(profile), Some(start)) = (&profile, classify_start) {
+        stage_profile::add(&profile.classify_ns, start);
+    }
 
     // ±1: plain (signed) additions.
+    #[cfg(feature = "msm-stage-profile-bench")]
+    let unit_start = profile.as_ref().map(|_| std::time::Instant::now());
     let unit: G = classes[0]
         .par_chunks(4096)
         .map(|es| {
@@ -780,9 +1037,24 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
             acc.into()
         })
         .sum();
+    #[cfg(feature = "msm-stage-profile-bench")]
+    if let (Some(profile), Some(start)) = (&profile, unit_start) {
+        stage_profile::add(&profile.unit_ns, start);
+    }
     let mut total = unit;
     for (class, entries) in classes.iter().enumerate().skip(1) {
-        total += pippenger::<G>(bases, scalars, entries, CLASS_BITS[class]);
+        total += pippenger::<G>(
+            bases,
+            scalars,
+            entries,
+            CLASS_BITS[class],
+            #[cfg(feature = "msm-stage-profile-bench")]
+            profile.as_ref(),
+        );
+    }
+    #[cfg(feature = "msm-stage-profile-bench")]
+    if let (Some(profile), Some(start)) = (&profile, msm_start) {
+        stage_profile::add(&profile.msm_ns, start);
     }
     total
 }

@@ -693,6 +693,9 @@ where
         let b_scalars = shared_b_scalars.as_ref().map(|scalars| scalars.as_slice());
         #[cfg(not(feature = "msm-b-shared-bench"))]
         let b_scalars: Option<&[Scalar]> = None;
+        let profile_request = crate::msm::next_bench_profile_request();
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let profile_origin = std::time::Instant::now();
         rayon::scope(|sc| {
             sc.spawn(|_| {
                 h = Some(
@@ -716,63 +719,84 @@ where
             if !r.is_zero() {
                 sc.spawn(|_| {
                     b1 = Some(time_resident(timings, "msm_b1", || {
-                        if let Some(scalars) = b_scalars {
-                            return crate::msm::msm(&key.b_g1_query, scalars);
-                        }
-                        resident_msm(&key.b_g1_query, chunk, &z_sc)
+                        crate::msm::bench_profile_task(
+                            profile_request,
+                            "B1",
+                            key.b_g1_query.len(),
+                            #[cfg(feature = "msm-stage-profile-bench")]
+                            profile_origin,
+                            || {
+                                if let Some(scalars) = b_scalars {
+                                    return crate::msm::msm(&key.b_g1_query, scalars);
+                                }
+                                resident_msm(&key.b_g1_query, chunk, &z_sc)
+                            },
+                        )
                     }));
                 });
             }
             sc.spawn(|_| {
                 b2 = Some(time_resident(timings, "msm_b2", || {
-                    #[cfg(feature = "msm-g2-shifted-bench")]
-                    let owned_b2_scalars = (b_scalars.is_none()
-                        && (cached_gls_g2.is_some() || shifted_g2.is_some()))
-                    .then(|| {
-                        use rayon::prelude::*;
-                        let count = key.b_g2_query.len();
-                        // Guard the allocation before writing any private scalar,
-                        // including if a worker unwinds during conversion.
-                        let mut scalars = zeroize::Zeroizing::new(vec![Scalar::default(); count]);
-                        scalars
-                            .par_iter_mut()
-                            .with_min_len(1 << 12)
-                            .zip(&z[..count])
-                            .for_each(|(slot, witness)| *slot = witness.into_bigint());
-                        scalars
-                    });
-                    #[cfg(feature = "msm-g2-shifted-bench")]
-                    let b2_scalars = || {
-                        b_scalars
-                            .or_else(|| owned_b2_scalars.as_ref().map(|scalars| scalars.as_slice()))
-                            .expect("specialized B2 requires request scalars")
-                    };
-                    #[cfg(feature = "msm-g2-shifted-bench")]
-                    if let Some(msm) = cached_gls_g2 {
-                        assert!(
-                            shifted_g2.is_none(),
-                            "conflicting resident B2 benchmark modes"
-                        );
-                        let bases = &key.b_g2_query;
-                        assert!(
-                            chunk >= bases.len(),
-                            "cached GLS requires an unchunked B2 query"
-                        );
-                        return msm(bases, b2_scalars());
-                    }
-                    #[cfg(feature = "msm-g2-shifted-bench")]
-                    if let Some(table) = shifted_g2 {
-                        assert!(table.matches(&key.b_g2_query), "shifted B2 key mismatch");
-                        assert!(
-                            chunk >= key.b_g2_query.len(),
-                            "shifted B2 requires an unchunked query"
-                        );
-                        return table.msm(b2_scalars());
-                    }
-                    if let Some(scalars) = b_scalars {
-                        return crate::msm::msm(&key.b_g2_query, scalars);
-                    }
-                    resident_msm(&key.b_g2_query, chunk, &z_sc)
+                    crate::msm::bench_profile_task(
+                        profile_request,
+                        "B2",
+                        key.b_g2_query.len(),
+                        #[cfg(feature = "msm-stage-profile-bench")]
+                        profile_origin,
+                        || {
+                            #[cfg(feature = "msm-g2-shifted-bench")]
+                            let owned_b2_scalars = (b_scalars.is_none()
+                                && (cached_gls_g2.is_some() || shifted_g2.is_some()))
+                            .then(|| {
+                                use rayon::prelude::*;
+                                let count = key.b_g2_query.len();
+                                // Guard the allocation before writing any private scalar,
+                                // including if a worker unwinds during conversion.
+                                let mut scalars =
+                                    zeroize::Zeroizing::new(vec![Scalar::default(); count]);
+                                scalars
+                                    .par_iter_mut()
+                                    .with_min_len(1 << 12)
+                                    .zip(&z[..count])
+                                    .for_each(|(slot, witness)| *slot = witness.into_bigint());
+                                scalars
+                            });
+                            #[cfg(feature = "msm-g2-shifted-bench")]
+                            let b2_scalars = || {
+                                b_scalars
+                                    .or_else(|| {
+                                        owned_b2_scalars.as_ref().map(|scalars| scalars.as_slice())
+                                    })
+                                    .expect("specialized B2 requires request scalars")
+                            };
+                            #[cfg(feature = "msm-g2-shifted-bench")]
+                            if let Some(msm) = cached_gls_g2 {
+                                assert!(
+                                    shifted_g2.is_none(),
+                                    "conflicting resident B2 benchmark modes"
+                                );
+                                let bases = &key.b_g2_query;
+                                assert!(
+                                    chunk >= bases.len(),
+                                    "cached GLS requires an unchunked B2 query"
+                                );
+                                return msm(bases, b2_scalars());
+                            }
+                            #[cfg(feature = "msm-g2-shifted-bench")]
+                            if let Some(table) = shifted_g2 {
+                                assert!(table.matches(&key.b_g2_query), "shifted B2 key mismatch");
+                                assert!(
+                                    chunk >= key.b_g2_query.len(),
+                                    "shifted B2 requires an unchunked query"
+                                );
+                                return table.msm(b2_scalars());
+                            }
+                            if let Some(scalars) = b_scalars {
+                                return crate::msm::msm(&key.b_g2_query, scalars);
+                            }
+                            resident_msm(&key.b_g2_query, chunk, &z_sc)
+                        },
+                    )
                 }));
             });
             sc.spawn(|_| {

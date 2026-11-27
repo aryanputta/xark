@@ -14,6 +14,7 @@ rust-version.workspace = true
 msm-g2-endpoint-bench = []
 msm-g2-shifted-bench = []
 msm-b-shared-bench = []
+msm-stage-profile-bench = []
 
 [dependencies]
 # Kept explicit for default-features = false; bump on release.
