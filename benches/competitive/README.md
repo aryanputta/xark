@@ -44,9 +44,13 @@ uses the hashed offline fixture release directly.
 
 ## Build and run
 
-Build the selected adapters from clean pinned sources. Save compiler versions,
-commands, dependency locks, and library linkage receipts as
-`additional_artifacts` in the [example manifest](config.example.json).
+Build the selected adapters from clean pinned sources. The Xark build helper
+requires an empty, isolated Cargo target directory and records the source
+commit, lockfile, compiler, command, logs and resulting binary hash. This
+prevents a shared target directory from silently supplying an object built
+from another experimental worktree. Save other compiler versions, commands,
+dependency locks, and library linkage receipts as `additional_artifacts` in
+the [example manifest](config.example.json).
 Manifest paths are relative to the manifest location unless absolute. The
 Xark source pin covers the benchmark example, Arkworks Cargo.lock, and the
 Gnark adapter and Go locks. The report records the checkout revisions and
@@ -54,17 +58,24 @@ hashes of the actual executables, shared libraries and inputs. Keep the
 build receipts to associate the executable fingerprints with source builds.
 
 ```sh
-cargo build --locked --release -p xark-groth16 --example bench_prove
 root=$(pwd)
+pin=$(git -C "$root" rev-parse HEAD)
+python3 benches/competitive/build_xark.py \
+  --source "$root" --expected-commit "$pin" \
+  --target-dir /path/to/new-empty-xark-target
 mkdir -p /path/to/bin
 (cd benches/privacy-rings-gnark &&
   go build -mod=readonly -trimpath -o /path/to/bin/privacy-rings-gnark .)
 cp benches/competitive/config.example.json /path/to/run.json
-git -C "$root" rev-parse HEAD
 ```
 
-Fill in the checkout commit, fixture root, and the paths for the lanes you
-want to run. Build [Constantine](../privacy-rings-constantine/README.md) and
+Set `binaries.bench` to the helper's `release/examples/bench_prove` executable
+and `xark_build_manifest` to its `xark-build-manifest.json`. Manifest version 2
+requires a self-consistent Xark build record before any timed request. Version
+1 remains readable but reports the Xark build as `unattested`. The manifest is
+an auditable build record, not a cryptographic attestation of the compiler or
+an uncontended-host guarantee. Fill in the checkout commit, fixture root, and
+the paths for the lanes you want to run. Build [Constantine](../privacy-rings-constantine/README.md) and
 [ICICLE](../privacy-rings-icicle/README.md) with their pinned upstream
 revisions and record their compiler flags and runtime dependencies.
 Use the pinned [Rapidsnark C API source](https://github.com/iden3/rapidsnark/tree/81eddf1a536d26497b237c0b8a04fe90baf7e439)

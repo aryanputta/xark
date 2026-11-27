@@ -18,6 +18,8 @@ import subprocess
 import sys
 import time
 
+from build_xark import verify_manifest
+
 HERE = Path(__file__).resolve().parent
 COMPETITORS = ("xark", "gnark", "rapidsnark", "constantine", "icicle")
 QUERY = {
@@ -91,6 +93,23 @@ def fingerprint(paths):
         name: {"path": str(path), "sha256": digest(path)}
         for name, path in paths.items()
     }
+
+
+def xark_build_record(config, root, source, binary):
+    manifest = config.get("xark_build_manifest")
+    require(
+        config["version"] == 1 or manifest,
+        "version 2 requires an isolated Xark build manifest",
+    )
+    if not manifest:
+        return None
+    path = (root / manifest).resolve(strict=True)
+    verified = verify_manifest(path, Path(source["path"]), binary)
+    require(
+        verified["source_commit"] == source["commit"],
+        "Xark build manifest has a different source commit",
+    )
+    return path
 
 
 def host():
@@ -411,7 +430,7 @@ def run_suite(args):
     config_path = args.config.resolve(strict=True)
     root = config_path.parent
     config = json.loads(config_path.read_text())
-    require(config["version"] == 1, "unsupported config version")
+    require(config["version"] in (1, 2), "unsupported config version")
     competitors = args.competitor or list(COMPETITORS)
     workloads = args.workload or list(WORKLOADS)
     require(len(set(competitors)) == len(competitors), "select each competitor once")
@@ -454,6 +473,9 @@ def run_suite(args):
             files[name] = (root / config["binaries"][name]).resolve(strict=True)
             if name not in {"rapidsnark_library", *BINARY_NAMES["icicle"][1:]}:
                 require(os.access(files[name], os.X_OK), f"{name} must be executable")
+    build_manifest = xark_build_record(config, root, sources["xark"], files["bench"])
+    if build_manifest:
+        files["xark_build_manifest"] = build_manifest
     for name, path in config.get("additional_artifacts", {}).items():
         require(f"extra:{name}" not in files, f"duplicate additional artifact: {name}")
         files[f"extra:{name}"] = (root / path).resolve(strict=True)
@@ -546,6 +568,7 @@ def run_suite(args):
         "workloads": workloads,
         "competitors": competitors,
         "sources": sources,
+        "xark_build_provenance": "self_consistent" if build_manifest else "unattested",
         "artifacts": dict(initial_files),
         "hardware": hardware,
         "budget": {

@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "fixtures": "/path/to/extracted/offline-fixtures",
   "sources": {
     "xark": {
@@ -20,7 +20,7 @@
     }
   },
   "binaries": {
-    "bench": "/path/to/xark/target/release/examples/bench_prove",
+    "bench": "/path/to/new-empty-xark-target/release/examples/bench_prove",
     "gnark": "/path/to/bin/privacy-rings-gnark",
     "rapidsnark_library": "/path/to/rapidsnark/build/src/librapidsnark.so",
     "node": "/path/to/bin/node",
@@ -31,6 +31,7 @@
     "icicle_hash": "/path/to/icicle/lib/libicicle_hash.so",
     "icicle_device": "/path/to/icicle/lib/libicicle_device.so"
   },
+  "xark_build_manifest": "/path/to/new-empty-xark-target/xark-build-manifest.json",
   "snarkjs": "/path/to/node_modules/snarkjs",
   "rapidsnark_ptau": {
     "path": "/path/to/prepared-bn254.ptau",
