@@ -5,11 +5,13 @@ use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
-use ark_bn254::{Bn254, G1Affine, G1Projective, G2Affine, G2Projective};
+use ark_bn254::{Bn254, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
 use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_ff::{BigInteger, PrimeField};
+use ark_serialize::Valid;
 use xark_groth16::msm::{self, Scalar, SwCurve};
 use xark_groth16::{BytecodeSource, ConstraintSource, ProvingKey};
+use zeroize::Zeroizing;
 
 #[path = "cached_gls_b2.rs"]
 pub(super) mod cached_gls_b2;
@@ -108,6 +110,72 @@ fn load(xbc_path: &str, pk_path: &str, directory: &Path) -> (ProvingKey<Bn254>, 
     }
     let scalars: Vec<Scalar> = witness.iter().map(|s| s.into_bigint()).collect();
     (pk, scalars)
+}
+
+/// Measure the most that reusing an ordinary two-dimensional B1 GLV split
+/// could save in B2. This does not model cached four-dimensional GLS.
+pub(super) fn run_glv_cost(args: &[String]) {
+    let [xbc_path, pk_path, directory, options @ ..] = args else {
+        panic!("usage: query-msm-glv-cost XBC KEY FIXTURE [samples] [warmups]");
+    };
+    let (samples, warmups) = counts(options).unwrap_or_else(|reason| panic!("{reason}"));
+    assert!(!super::tracking(), "set BENCH_TIME=1 for GLV cost timing");
+    let (pk, scalars) = load(xbc_path, pk_path, Path::new(directory));
+    pk.check().expect("validate proving-key points");
+    let scalars = Zeroizing::new(scalars);
+    let mut eligible = Zeroizing::new(Vec::new());
+    for (i, scalar) in scalars.iter().enumerate() {
+        if scalar.is_zero()
+            || pk.b_g1_query[i].is_zero()
+            || pk.b_g2_query[i].is_zero()
+            || scalar >= &Fr::MODULUS
+        {
+            continue;
+        }
+        let mut complement = Fr::MODULUS;
+        complement.sub_with_borrow(scalar);
+        if scalar.num_bits().min(complement.num_bits()) > xark_groth16::glv::HALF_BITS as u32 {
+            eligible.push(i);
+        }
+    }
+    let g1 = xark_groth16::glv::g1();
+    let g2 = xark_groth16::glv::g2();
+    let mut timings = Vec::with_capacity(samples);
+    for iteration in 0..warmups + samples {
+        let measure = |split: &xark_groth16::glv::Glv| {
+            timed(|| {
+                for &index in eligible.iter() {
+                    let _ = black_box(split.decompose(black_box(&scalars[index])));
+                }
+            })
+            .1
+        };
+        let g1_first = iteration % 2 == 0;
+        let (g1_elapsed, g2_elapsed) = if g1_first {
+            (measure(g1), measure(g2))
+        } else {
+            let second = measure(g2);
+            (measure(g1), second)
+        };
+        if iteration >= warmups {
+            timings.push((g1_first, g1_elapsed, g2_elapsed));
+        }
+    }
+    println!(
+        "query GLV cost: terms={} eligible={} threads={} samples={samples} warmups={warmups}",
+        scalars.len(),
+        eligible.len(),
+        rayon::current_num_threads(),
+    );
+    for (index, (g1_first, g1, g2)) in timings.into_iter().enumerate() {
+        println!(
+            "query GLV cost: sample={} first={} g1_ns={} g2_ns={}",
+            index + 1,
+            if g1_first { "g1" } else { "g2" },
+            g1.as_nanos(),
+            g2.as_nanos(),
+        );
+    }
 }
 
 pub(super) fn run(args: &[String], xark_only: bool) {

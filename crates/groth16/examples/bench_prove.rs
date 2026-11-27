@@ -13,6 +13,7 @@
 //! BENCH_MEMORY=1 bench_prove warm-requests <circuit.xbc> <reduced pk.bin> <cpu|gls> <concurrency> <requests> <fixture-dir>...
 //! BENCH_TIME=1 bench_prove query-msm <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-xark <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
+//! BENCH_TIME=1 bench_prove query-msm-glv-cost <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-b2-shifted <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-b2-cached-gls <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-b2-cached-gls-reciprocal <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
@@ -39,6 +40,9 @@
 //! disable GLV for Xark's query benchmark.
 //! `query-msm-xark` times Xark's B1 and B2 queries in separate batches and
 //! checks each result against precomputed Arkworks references.
+//! `query-msm-glv-cost` times only the existing G1/G2 decomposition of
+//! full-width terms present in both B queries. It bounds the potential saving
+//! from reusing a two-dimensional split; it does not implement that reuse.
 //! With `--features msm-g2-endpoint-bench`, set `BENCH_G2_TRIM_INVERSE_ENDPOINTS`
 //! to `1` to omit redundant products in G2 affine batch inversion. `0` is the default.
 //! `query-msm-g2-endpoints-paired` takes the same arguments as `query-msm-xark`
@@ -527,6 +531,10 @@ fn main() {
         }
         "query-msm" | "query-msm-xark" => {
             query_msm::run(&args[2..], mode == "query-msm-xark");
+            return;
+        }
+        "query-msm-glv-cost" => {
+            query_msm::run_glv_cost(&args[2..]);
             return;
         }
         #[cfg(feature = "msm-g2-shifted-bench")]
