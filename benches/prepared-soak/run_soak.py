@@ -15,6 +15,11 @@ PINNED_MANIFEST_SHA256 = (
 )
 
 
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValueError(message)
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -29,12 +34,15 @@ def check_manifest(root: Path) -> str:
     if manifest_digest != PINNED_MANIFEST_SHA256:
         raise ValueError("fixture manifest does not match the pinned synthetic set")
     entries = manifest.read_text().splitlines()
-    assert len(entries) == 28, "expected the pinned 28-file synthetic fixture set"
+    require(len(entries) == 28, "expected the pinned 28-file synthetic fixture set")
     for entry in entries:
         expected, name = entry.split("  ", 1)
         member = Path(name)
-        assert not member.is_absolute() and ".." not in member.parts
-        assert sha256(root / member) == expected, f"fixture checksum mismatch: {name}"
+        require(
+            not member.is_absolute() and ".." not in member.parts,
+            f"unsafe fixture path: {name}",
+        )
+        require(sha256(root / member) == expected, f"fixture checksum mismatch: {name}")
     return manifest_digest
 
 
@@ -48,8 +56,11 @@ def main() -> None:
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--threads", type=int, default=2)
     args = parser.parse_args()
-    assert args.requests >= 4 and 1 <= args.concurrency <= args.requests
-    assert args.threads >= 1
+    require(
+        args.requests >= 4 and 1 <= args.concurrency <= args.requests,
+        "invalid request count",
+    )
+    require(args.threads >= 1, "worker count must be positive")
     manifest_sha256 = check_manifest(args.fixture_root)
     directories = sorted(
         path.parent
@@ -57,15 +68,19 @@ def main() -> None:
             "*/**/inputs.json"
         )
     )
-    assert len(directories) == 4
-    assert all((directory / "public.json").is_file() for directory in directories)
-    assert all(
-        (directory / "public-changed.json").is_file() for directory in directories
+    require(len(directories) == 4, "expected four pinned request directories")
+    require(
+        all((directory / "public.json").is_file() for directory in directories),
+        "missing public statement",
+    )
+    require(
+        all((directory / "public-changed.json").is_file() for directory in directories),
+        "missing altered public statement",
     )
     reference = args.fixture_root / "reference" / args.circuit
     xbc = reference / "circuit.xbc"
     key = reference / "test-key.bin"
-    assert xbc.is_file() and key.is_file()
+    require(xbc.is_file() and key.is_file(), "missing pinned circuit or key")
     binary_sha256 = sha256(args.binary)
 
     args.result_dir.mkdir(parents=True, exist_ok=True)
@@ -73,9 +88,10 @@ def main() -> None:
     stdout_path = args.result_dir / f"{args.circuit}.stdout"
     stderr_path = args.result_dir / f"{args.circuit}.stderr"
     process_path = args.result_dir / f"{args.circuit}-process.json"
-    assert not any(
-        path.exists() for path in (stdout_path, stderr_path, process_path)
-    ), "refusing to overwrite a prior run"
+    require(
+        not any(path.exists() for path in (stdout_path, stderr_path, process_path)),
+        "refusing to overwrite a prior run",
+    )
     command = [
         str(args.binary),
         "warm-requests",

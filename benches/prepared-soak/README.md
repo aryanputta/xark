@@ -41,6 +41,9 @@ generates each witness for its request, verifies every proof with Xark and
 Arkworks, and tests altered and cross-request public statements. It does not
 validate every proving-key point in the benchmark loader, measure actual
 freed-memory erasure, or establish confidentiality against co-resident users.
+The fixture and receipt gates use explicit errors, including under Python
+optimized mode (`python3 -O`); a tampered receipt and an overwrite were rejected
+in that mode.
 
 Do not use this soak's service timings as a performance comparison. For a speed
 claim, run balanced baseline and candidate proofs with equivalent verification
