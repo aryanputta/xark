@@ -68,6 +68,9 @@
 //! In `warm-requests`, set `BENCH_SHARED_B_SCALARS=0|1` to ablate request-local
 //! scalar reuse independently of the `cpu|gls` B2 backend. Unset defaults to
 //! off for CPU and on for GLS, preserving prior request-runner behavior.
+//! Set `BENCH_G2_SHIFTED=1` with `warm-requests ... cpu` to measure the
+//! immutable shifted B2 table on varied, independently verified requests.
+//! Table preparation follows one-time proving-key point validation.
 //! `query-msm-export` writes both ordered queries, the witness scalars, and
 //! Arkworks reference sums for a same-input benchmark. Use reproducible test
 //! fixtures and keep the witness-bearing export in local scratch storage.

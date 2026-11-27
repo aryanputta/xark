@@ -40,6 +40,15 @@ fn shared_b_mode(value: Result<String, std::env::VarError>, use_gls: bool) -> bo
     }
 }
 
+fn shifted_mode(value: Result<String, std::env::VarError>, use_gls: bool) -> bool {
+    match value {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(value) if value == "0" => false,
+        Ok(value) if value == "1" && !use_gls => true,
+        _ => panic!("BENCH_G2_SHIFTED must be 0 or 1, and requires cpu mode"),
+    }
+}
+
 pub(super) fn run(args: &[String]) {
     let [xbc, key, mode, concurrency, requests, directories @ ..] = args else {
         panic!("usage: warm-requests XBC KEY cpu|gls CONCURRENCY REQUESTS FIXTURE...");
@@ -63,6 +72,7 @@ pub(super) fn run(args: &[String]) {
         "gls" => true,
         _ => panic!("expected cpu or gls"),
     };
+    let use_shifted = shifted_mode(std::env::var("BENCH_G2_SHIFTED"), use_gls);
     #[cfg(feature = "msm-b-shared-bench")]
     let share_b_scalars = shared_b_mode(std::env::var("BENCH_SHARED_B_SCALARS"), use_gls);
     let concurrency: usize = concurrency.parse().expect("request concurrency");
@@ -126,6 +136,17 @@ pub(super) fn run(args: &[String]) {
         query_msm::cached_gls_b2::ResidentCachedGls::new(&key.b_g2_query, true)
             .expect("validate and prepare resident G2 points")
     });
+    let shifted = use_shifted.then(|| {
+        let began = Instant::now();
+        let table = xark_groth16::msm::shifted::ShiftedBases::new(&key.b_g2_query)
+            .expect("prepare shifted B2 table");
+        eprintln!(
+            "shifted B2 table: prepare_ns={} payload_bytes={}",
+            began.elapsed().as_nanos(),
+            table.payload_bytes()
+        );
+        table
+    });
     let cached_msm = cached.as_ref().map(|table| {
         move |bases: &[ark_bn254::G2Affine], scalars: &[xark_groth16::msm::Scalar]| {
             table.msm(bases, scalars)
@@ -157,7 +178,7 @@ pub(super) fn run(args: &[String]) {
         let mut prover = ProfiledCpu {
             cpu,
             profiles: profile.then_some(&mut profiles),
-            shifted: None,
+            shifted: shifted.as_ref(),
             cached_gls: cached_msm
                 .as_ref()
                 .map(|msm| msm as &xark_groth16::prover::BenchResidentB2<'_>),
@@ -239,6 +260,7 @@ pub(super) fn run(args: &[String]) {
         }
     }
     eprintln!("prepared stream solver: {}", u8::from(prepare_solver));
+    eprintln!("shifted B2 table enabled: {}", u8::from(use_shifted));
     #[cfg(feature = "msm-b-shared-bench")]
     eprintln!("shared B scalars: {}", u8::from(share_b_scalars));
     println!(
@@ -246,6 +268,32 @@ pub(super) fn run(args: &[String]) {
         rayon::current_num_threads(),
         setup.as_nanos()
     );
+}
+
+#[cfg(test)]
+mod shifted_tests {
+    use super::shifted_mode;
+
+    #[test]
+    fn shifted_selector_is_cpu_only_and_off_by_default() {
+        for use_gls in [false, true] {
+            assert!(!shifted_mode(Err(std::env::VarError::NotPresent), use_gls));
+            assert!(!shifted_mode(Ok("0".into()), use_gls));
+        }
+        assert!(shifted_mode(Ok("1".into()), false));
+    }
+
+    #[test]
+    #[should_panic(expected = "BENCH_G2_SHIFTED must be 0 or 1")]
+    fn shifted_selector_rejects_gls() {
+        shifted_mode(Ok("1".into()), true);
+    }
+
+    #[test]
+    #[should_panic(expected = "BENCH_G2_SHIFTED must be 0 or 1")]
+    fn shifted_selector_rejects_invalid_value() {
+        shifted_mode(Ok("maybe".into()), false);
+    }
 }
 
 #[cfg(all(test, feature = "msm-b-shared-bench"))]
