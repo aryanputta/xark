@@ -1,0 +1,31 @@
+name: GLS window audit Linux correctness
+
+on:
+  push:
+    branches:
+      - audit/gls-window-operation-screen
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: never
+      RAYON_NUM_THREADS: 2
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all -- --check
+      - name: Test synthetic audit and optimized paths
+        run: |
+          features=msm-access-audit,msm-window-audit,msm-b-shared-bench,msm-g2-shifted-bench,msm-g2-endpoint-bench
+          cargo test --locked --profile ci -p xark-groth16 --features "$features" --lib --tests -- --test-threads=1
+          cargo test --locked --profile ci -p xark-groth16 --features "$features" --example bench_prove -- --test-threads=1
+          cargo clippy --locked --profile ci -p xark-groth16 --features "$features" --all-targets -- -D warnings
+      - name: Test portable prover
+        run: cargo test --locked --profile ci -p xark-groth16 --lib --tests
