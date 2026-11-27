@@ -714,7 +714,19 @@ where
                     #[cfg(feature = "msm-g2-shifted-bench")]
                     let owned_b2_scalars = (b_scalars.is_none()
                         && (cached_gls_g2.is_some() || shifted_g2.is_some()))
-                    .then(|| zeroize::Zeroizing::new(z_sc(0, key.b_g2_query.len())));
+                    .then(|| {
+                        use rayon::prelude::*;
+                        let count = key.b_g2_query.len();
+                        // Guard the allocation before writing any private scalar,
+                        // including if a worker unwinds during conversion.
+                        let mut scalars = zeroize::Zeroizing::new(vec![Scalar::default(); count]);
+                        scalars
+                            .par_iter_mut()
+                            .with_min_len(1 << 12)
+                            .zip(&z[..count])
+                            .for_each(|(slot, witness)| *slot = witness.into_bigint());
+                        scalars
+                    });
                     #[cfg(feature = "msm-g2-shifted-bench")]
                     let b2_scalars = || {
                         b_scalars
