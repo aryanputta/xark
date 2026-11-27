@@ -863,6 +863,78 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "msm-access-audit", feature = "msm-window-audit"))]
+    #[test]
+    fn cached_gls_public_window_sweep_matches_arkworks() {
+        struct ResetWindow;
+        impl Drop for ResetWindow {
+            fn drop(&mut self) {
+                msm::set_audit_g2_window_delta(0);
+            }
+        }
+        let _reset = ResetWindow;
+
+        fn sweep(label: &str, bases: &[G2Affine], scalars: &[Scalar]) {
+            let cache = CachedImages::new(bases).unwrap();
+            let recoded = cache.recode::<true>(&Recoder::new(), scalars);
+            let expected = G2Projective::msm_bigint(bases, scalars);
+            for delta in [-1, 0, 1] {
+                msm::set_audit_g2_window_delta(delta);
+                let _ = msm::access_audit::take();
+                let actual = msm::msm::<G2Projective>(&cache.points, &recoded);
+                let counts = msm::access_audit::take();
+                assert_eq!(actual, expected, "{label} delta={delta}");
+                assert_eq!(
+                    counts.affine_adds + counts.projective_updates,
+                    counts.window_base_reads,
+                    "{label} delta={delta}"
+                );
+                eprintln!(
+                    "window-audit {label} delta={delta} gather={} window_reads={} affine_adds={} attempts={} conflicts={} spills={} flushes={} projective={} reduction_slots={}",
+                    counts.gather_reads,
+                    counts.window_base_reads,
+                    counts.affine_adds,
+                    counts.place_attempts,
+                    counts.place_conflicts,
+                    counts.spill_adds,
+                    counts.nonempty_flushes,
+                    counts.projective_updates,
+                    counts.reduction_slots
+                );
+            }
+        }
+
+        let generator = G2Projective::generator();
+        let bases: Vec<_> = (1..=256u64)
+            .map(|i| generator.mul_bigint([i]).into_affine())
+            .collect();
+        let mut rng = ChaCha20Rng::seed_from_u64(0xacc355);
+        let scalars: Vec<_> = (0..bases.len())
+            .map(|_| Fr::rand(&mut rng).into_bigint())
+            .collect();
+        sweep("synthetic-256", &bases, &scalars);
+
+        if let Ok(root) = std::env::var("XARK_SYNTHETIC_FIXTURE_ROOT") {
+            let root = Path::new(&root);
+            for circuit in ["escrow", "withdrawal"] {
+                let reference = root.join("reference").join(circuit);
+                let requests = root.join("requests").join(circuit).join("1");
+                let request: Vec<_> = std::fs::read_dir(requests)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect();
+                assert_eq!(request.len(), 1, "one pinned synthetic request");
+                let (key, scalars) = super::super::load(
+                    reference.join("circuit.xbc").to_str().unwrap(),
+                    reference.join("test-key.bin").to_str().unwrap(),
+                    &request[0],
+                );
+                let scalars = Zeroizing::new(scalars);
+                sweep(circuit, &key.b_g2_query, &scalars);
+            }
+        }
+    }
+
     #[cfg(feature = "msm-g2-shifted-bench")]
     #[test]
     #[should_panic(expected = "cached GLS B2 key mismatch")]

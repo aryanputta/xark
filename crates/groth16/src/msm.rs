@@ -34,6 +34,7 @@ pub mod access_audit {
     pub(super) static SPILL_ADDS: AtomicU64 = AtomicU64::new(0);
     pub(super) static NONEMPTY_FLUSHES: AtomicU64 = AtomicU64::new(0);
     pub(super) static PROJECTIVE_UPDATES: AtomicU64 = AtomicU64::new(0);
+    pub(super) static REDUCTION_SLOTS: AtomicU64 = AtomicU64::new(0);
 
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     pub struct Counts {
@@ -45,6 +46,7 @@ pub mod access_audit {
         pub spill_adds: u64,
         pub nonempty_flushes: u64,
         pub projective_updates: u64,
+        pub reduction_slots: u64,
     }
 
     /// Use around one sequential synthetic MSM invocation, with one test
@@ -59,6 +61,7 @@ pub mod access_audit {
             spill_adds: SPILL_ADDS.swap(0, Ordering::Relaxed),
             nonempty_flushes: NONEMPTY_FLUSHES.swap(0, Ordering::Relaxed),
             projective_updates: PROJECTIVE_UPDATES.swap(0, Ordering::Relaxed),
+            reduction_slots: REDUCTION_SLOTS.swap(0, Ordering::Relaxed),
         }
     }
 }
@@ -527,6 +530,18 @@ fn window_bits(n: usize, bits: usize, ext: u64) -> usize {
         .unwrap()
 }
 
+// Synthetic operation-count experiment only. Set before starting an MSM; the
+// production path keeps the existing cost model and has no mutable override.
+#[cfg(feature = "msm-window-audit")]
+static G2_WINDOW_DELTA: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(0);
+
+#[cfg(feature = "msm-window-audit")]
+#[doc(hidden)]
+pub fn set_audit_g2_window_delta(delta: i8) {
+    assert!((-1..=1).contains(&delta));
+    G2_WINDOW_DELTA.store(delta, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// One magnitude class: entries packed as `index | NEG` (index < 2³¹).
 const NEG: u32 = 1 << 31;
 
@@ -625,7 +640,17 @@ fn pippenger_core<G: SwCurve>(
         return G::zero();
     }
     // ≤ 15-bit windows so every signed digit (|d| ≤ 2^(c−1)) fits an i16.
-    let c = window_bits(n, bits, G::BaseField::extension_degree());
+    let ext = G::BaseField::extension_degree();
+    let c = window_bits(n, bits, ext);
+    #[cfg(feature = "msm-window-audit")]
+    let c = if ext == 2 {
+        c.saturating_add_signed(isize::from(
+            G2_WINDOW_DELTA.load(std::sync::atomic::Ordering::Relaxed),
+        ))
+        .clamp(2, 15)
+    } else {
+        c
+    };
     let windows = (bits + 1).div_ceil(c);
     let threads = rayon::current_num_threads().max(1);
     // Split points so `windows × parts` covers the pool ~2× over, but keep slices
@@ -690,6 +715,9 @@ fn pippenger_core<G: SwCurve>(
                 }
             };
             let nb = 1usize << (c - 1);
+            #[cfg(feature = "msm-access-audit")]
+            access_audit::REDUCTION_SLOTS
+                .fetch_add(nb as u64, std::sync::atomic::Ordering::Relaxed);
             // Batch-affine pays off once a task has many points per bucket, and
             // enough buckets that a batch (one per bucket at most) shares its
             // inversion widely: with 32, it is 3.7× slower at 64 points.
