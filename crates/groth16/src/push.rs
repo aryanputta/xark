@@ -15,6 +15,7 @@ use ark_ec::CurveGroup;
 use ark_ff::{PrimeField, Zero};
 use ark_serialize::Compress;
 use rayon::prelude::*;
+use zeroize::Zeroizing;
 
 use crate::accel::{Accelerator, sum_g1, sum_g2, valid_msm_output};
 use crate::keystream::{KeyEvent, KeyStream, KeyStreamError};
@@ -27,7 +28,7 @@ use crate::r1cs::ConstraintSource;
 /// A proof in progress, waiting for proving-key bytes. See the module docs.
 pub struct PushProver<S: ConstraintSource> {
     src: S,
-    z: Vec<Fr>,
+    z: Zeroizing<Vec<Fr>>,
     /// The quotient, once the domain is known.
     h: Option<qap::Quotient>,
     r: Fr,
@@ -179,7 +180,7 @@ impl<S: ConstraintSource> Fold<'_, S> {
             ark_serialize::CanonicalSerialize::serialized_size(&G1Affine::default(), c)
         };
         let n = bytes.len() / psz;
-        let sc = self.scalars(i, off, n);
+        let sc = Zeroizing::new(self.scalars(i, off, n));
         let g2 = i == 2;
         if self.accel.wants_msm()
             && let Some(p) = self.accel.msm(g2, bytes, compressed, &sc)
@@ -223,6 +224,7 @@ impl<S: ConstraintSource> PushProver<S> {
         cfg: ProverConfig,
         accel: &mut dyn Accelerator,
     ) -> Result<Self, ProveError> {
+        let z = Zeroizing::new(z);
         let h = match cfg.domain {
             Some(n) => {
                 let dom = qap::domain_of_size(&src, n, cfg.fft).map_err(ProveError::KeyMismatch)?;

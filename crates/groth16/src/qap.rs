@@ -15,6 +15,7 @@
 use ark_bn254::Fr;
 use ark_ff::{FftField, Field, PrimeField, Zero};
 use rayon::prelude::*;
+use zeroize::Zeroizing;
 
 use crate::accel::{Accelerator, Local};
 use crate::fft::{Domain, FftConfig};
@@ -73,7 +74,7 @@ fn to_coset(dom: &Domain, v: &mut [Fr], accel: &mut dyn Accelerator) {
 /// chunk at a time ([`chunk`](Self::chunk)) — so `h` is never copied into a
 /// second, natural-order vector.
 pub struct Quotient {
-    t: Vec<Fr>,
+    t: Zeroizing<Vec<Fr>>,
     n1: usize,
     n2: usize,
 }
@@ -237,7 +238,7 @@ pub fn quotient<S: ConstraintSource + ?Sized>(
                         *x *= z_inv;
                     });
                 return Ok(Quotient {
-                    t: a,
+                    t: Zeroizing::new(a),
                     n1: dom.n1,
                     n2: dom.n2,
                 });
@@ -255,7 +256,7 @@ pub fn quotient<S: ConstraintSource + ?Sized>(
                         *x *= z_inv;
                     });
                 return Ok(Quotient {
-                    t: a,
+                    t: Zeroizing::new(a),
                     n1: dom.n1,
                     n2: dom.n2,
                 });
@@ -277,7 +278,7 @@ pub fn quotient<S: ConstraintSource + ?Sized>(
         dom.from_coset_to_t(&mut a, Fr::GENERATOR.inverse().unwrap());
     }
     Ok(Quotient {
-        t: a,
+        t: Zeroizing::new(a),
         n1: dom.n1,
         n2: dom.n2,
     })
