@@ -13,6 +13,8 @@
 //!   same point; the chunk is dropped as soon as it is folded.
 
 use ark_bn254::Fr;
+#[cfg(feature = "msm-tiny-g2-class-bench")]
+use ark_ec::AffineRepr;
 use ark_ec::CurveGroup;
 use ark_ff::{BigInteger, Field, One, PrimeField, Zero};
 use ark_serialize::CanonicalSerialize;
@@ -493,6 +495,16 @@ fn pippenger<G: SwCurve>(
     entries: &[u32],
     bits: usize,
 ) -> G {
+    // Experimental: tiny non-full-width G2 classes otherwise pay for a whole
+    // Pippenger window schedule. The branch depends only on public group type
+    // and the already secret-derived class length. Affine scalar multiplication
+    // has a different secret-dependent access pattern; this is not a hardened
+    // path. Retain the portable path whenever this bench feature is off.
+    #[cfg(feature = "msm-tiny-g2-class-bench")]
+    if bits <= crate::glv::HALF_BITS && entries.len() <= 4 && G::BaseField::extension_degree() == 2
+    {
+        return tiny_g2_class_direct(bases, scalars, entries);
+    }
     // Fewer windows also means fewer tasks, and twice the points larger bucket
     // sweeps: measured (`examples/bench_msm.rs`), the split is 4–19% faster up
     // to 2^18 points on one thread and 2^12 on sixteen, 7–17% slower past 2^19
@@ -511,6 +523,24 @@ fn pippenger<G: SwCurve>(
         return pippenger_glv::<G>(bases, scalars, entries, G::bench_sparse_endo);
     }
     pippenger_glv::<G>(bases, scalars, entries, G::endo)
+}
+
+#[cfg(feature = "msm-tiny-g2-class-bench")]
+fn tiny_g2_class_direct<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar], entries: &[u32]) -> G {
+    let mut sum = G::zero();
+    for &entry in entries {
+        let i = (entry & !NEG) as usize;
+        if entry & NEG != 0 {
+            // Match the existing magnitude-class semantics exactly, including
+            // for a point whose subgroup membership has not been established.
+            let mut magnitude = Zeroizing::new(Fr::MODULUS);
+            magnitude.sub_with_borrow(&scalars[i]);
+            sum -= bases[i].mul_bigint(&*magnitude);
+        } else {
+            sum += bases[i].mul_bigint(scalars[i]);
+        }
+    }
+    sum
 }
 
 fn pippenger_glv<G: SwCurve>(
@@ -791,6 +821,50 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
 mod tests {
     use super::*;
     use ark_ff::Zero;
+
+    #[cfg(feature = "msm-tiny-g2-class-bench")]
+    #[test]
+    fn tiny_g2_class_direct_matches_pippenger_and_arkworks() {
+        use ark_bn254::{G2Affine, G2Projective};
+        use ark_ec::{AffineRepr, PrimeGroup, VariableBaseMSM};
+
+        let base = G2Projective::generator();
+        let bases: Vec<_> = (1..=4)
+            .map(|n| base.mul_bigint([n]).into_affine())
+            .collect();
+        let positive = ark_ff::BigInt([1 << 63, 0, 0, 0]);
+        let mut negative = Fr::MODULUS;
+        negative.sub_with_borrow(&positive);
+        let scalars = [
+            positive,
+            negative,
+            ark_ff::BigInt([1 << 32, 0, 0, 0]),
+            negative,
+        ];
+        let entries = [0, 1 | NEG, 2, 3 | NEG];
+        for len in 1..=4 {
+            let direct = tiny_g2_class_direct::<G2Projective>(
+                &bases[..len],
+                &scalars[..len],
+                &entries[..len],
+            );
+            let pippenger = pippenger_core::<G2Projective>(
+                &bases[..len],
+                &scalars[..len],
+                &entries[..len],
+                64,
+                false,
+            );
+            let arkworks = G2Projective::msm_bigint(&bases[..len], &scalars[..len]);
+            assert!(same_point(&direct, &pippenger));
+            assert!(same_point(&direct, &arkworks));
+        }
+        assert_eq!(
+            tiny_g2_class_direct::<G2Projective>(&[], &[], &[]),
+            G2Projective::zero()
+        );
+        assert_eq!(G2Affine::identity().mul_bigint([1]), G2Projective::zero());
+    }
 
     #[cfg(feature = "msm-g2-endpoint-bench")]
     #[test]
