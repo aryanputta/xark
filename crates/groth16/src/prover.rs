@@ -712,9 +712,14 @@ where
             sc.spawn(|_| {
                 b2 = Some(time_resident(timings, "msm_b2", || {
                     #[cfg(feature = "msm-g2-shifted-bench")]
-                    let b2_scalars = || match b_scalars {
-                        Some(scalars) => std::borrow::Cow::Borrowed(scalars),
-                        None => std::borrow::Cow::Owned(z_sc(0, key.b_g2_query.len())),
+                    let owned_b2_scalars = (b_scalars.is_none()
+                        && (cached_gls_g2.is_some() || shifted_g2.is_some()))
+                    .then(|| zeroize::Zeroizing::new(z_sc(0, key.b_g2_query.len())));
+                    #[cfg(feature = "msm-g2-shifted-bench")]
+                    let b2_scalars = || {
+                        b_scalars
+                            .or_else(|| owned_b2_scalars.as_ref().map(|scalars| scalars.as_slice()))
+                            .expect("specialized B2 requires request scalars")
                     };
                     #[cfg(feature = "msm-g2-shifted-bench")]
                     if let Some(msm) = cached_gls_g2 {
@@ -727,7 +732,7 @@ where
                             chunk >= bases.len(),
                             "cached GLS requires an unchunked B2 query"
                         );
-                        return msm(bases, &b2_scalars());
+                        return msm(bases, b2_scalars());
                     }
                     #[cfg(feature = "msm-g2-shifted-bench")]
                     if let Some(table) = shifted_g2 {
@@ -736,7 +741,7 @@ where
                             chunk >= key.b_g2_query.len(),
                             "shifted B2 requires an unchunked query"
                         );
-                        return table.msm(&b2_scalars());
+                        return table.msm(b2_scalars());
                     }
                     if let Some(scalars) = b_scalars {
                         return crate::msm::msm(&key.b_g2_query, scalars);
