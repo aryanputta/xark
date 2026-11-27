@@ -75,7 +75,10 @@ fn prepared_satisfaction_only_matches_witness_and_rejects_invalid_statement() {
         || solver.solve_satisfied(&invalid),
     );
     assert_eq!(actual.unwrap(), expected);
-    assert_eq!(rejected.unwrap_err(), solver.solve_verify(&invalid).unwrap_err());
+    assert_eq!(
+        rejected.unwrap_err(),
+        solver.solve_verify(&invalid).unwrap_err()
+    );
     assert_eq!(solver.solve_satisfied(&valid).unwrap(), expected);
 }
 

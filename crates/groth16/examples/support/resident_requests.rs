@@ -33,7 +33,11 @@ pub(super) fn run(args: &[String]) {
     let [xbc, key, mode, concurrency, requests, directories @ ..] = args else {
         panic!("usage: warm-requests XBC KEY cpu|gls CONCURRENCY REQUESTS FIXTURE...");
     };
-    assert!(!tracking(), "use BENCH_TIME=1 for request timing");
+    let memory_run = std::env::var_os("BENCH_MEMORY").is_some();
+    assert!(
+        !tracking() || memory_run,
+        "use BENCH_TIME=1 for request timing"
+    );
     let use_gls = match mode.as_str() {
         "cpu" => false,
         "gls" => true,
@@ -100,6 +104,13 @@ pub(super) fn run(args: &[String]) {
         }
     });
     let setup = start.elapsed();
+    let setup_live_heap = if memory_run {
+        let live = super::CUR.load(std::sync::atomic::Ordering::Relaxed);
+        super::PEAK.store(live, std::sync::atomic::Ordering::Relaxed);
+        Some(live)
+    } else {
+        None
+    };
 
     let prove = |index: usize| {
         let began = Instant::now();
@@ -186,6 +197,13 @@ pub(super) fn run(args: &[String]) {
         }
     }
     eprintln!("prepared stream solver: {}", u8::from(prepare_solver));
+    if memory_run {
+        eprintln!(
+            "setup_live_heap_bytes={} request_peak_heap_bytes={}",
+            setup_live_heap.expect("memory run has setup heap"),
+            super::PEAK.load(std::sync::atomic::Ordering::Relaxed)
+        );
+    }
     println!(
         "requests verified mode={mode} concurrency={concurrency} threads={} count={requests} setup_ns={} altered=rejected cross_request=rejected",
         rayon::current_num_threads(),
