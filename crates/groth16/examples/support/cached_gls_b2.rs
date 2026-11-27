@@ -412,11 +412,6 @@ pub(crate) fn run<const FIXED: bool>(args: &[String]) {
     if let Err(index) = subgroup {
         panic!("B2 base {index} is outside the BN254 G2 subgroup");
     }
-    let split_terms = bases
-        .iter()
-        .zip(&scalars)
-        .filter(|(point, s)| !point.is_zero() && requires_split(s))
-        .count();
     let (recoder, recoder_setup) = super::timed(Recoder::new);
     let (cache, prepare) =
         super::timed(|| CachedImages::new(bases).expect("prepare signed GLS bases"));
@@ -459,7 +454,7 @@ pub(crate) fn run<const FIXED: bool>(args: &[String]) {
     }
     let rounding = if FIXED { "fixed-limb" } else { "division" };
     println!(
-        "query msm B2 cached GLS verified: terms={} threads={} samples={samples} warmups={warmups} subgroup_points={} split_terms={split_terms} xark_glv={} xark_batch_affine={} table_payload_bytes={} table_cap_bytes={TABLE_CAP_BYTES} scalar_scratch_bytes={} recoder_setup_ns={} prepare_ns={} rounding={rounding} fixture_load_ns={} subgroup_check_ns={} oracle_ns={}",
+        "query msm B2 cached GLS verified: terms={} threads={} samples={samples} warmups={warmups} subgroup_points={} xark_glv={} xark_batch_affine={} table_payload_bytes={} table_cap_bytes={TABLE_CAP_BYTES} scalar_scratch_bytes={} recoder_setup_ns={} prepare_ns={} rounding={rounding} fixture_load_ns={} subgroup_check_ns={} oracle_ns={}",
         bases.len(),
         rayon::current_num_threads(),
         bases.len(),
