@@ -1,0 +1,31 @@
+name: G2 gather experiment Linux correctness
+
+on:
+  push:
+    branches:
+      - perf/g2-gather-copy-screen
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: never
+      RAYON_NUM_THREADS: 2
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all -- --check
+      - name: Test opt-in G2 gather path
+        run: |
+          features=msm-g2-no-gather-bench,msm-b-shared-bench,msm-g2-shifted-bench,msm-g2-endpoint-bench
+          cargo test --locked --profile ci -p xark-groth16 --features "$features" --lib --tests
+          cargo test --locked --profile ci -p xark-groth16 --features "$features" --example bench_prove
+          cargo clippy --locked --profile ci -p xark-groth16 --features "$features" --all-targets -- -D warnings
+      - name: Test portable prover
+        run: cargo test --locked --profile ci -p xark-groth16 --lib --tests
