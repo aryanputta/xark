@@ -17,6 +17,7 @@ on:
       - perf/sparse-resident-solver-metadata
       - feat/prepared-cpu-prover
       - validation/prepared-decimal-wipe-guard
+      - bench/prepared-request-memory-trace
 
 permissions:
   contents: read

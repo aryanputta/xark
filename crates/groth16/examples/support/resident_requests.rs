@@ -5,9 +5,9 @@ use rayon::prelude::*;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{
-    Bn254, BytecodeSource, ConstraintSource, Cpu, Fr, Groth16, Instant, ProfiledCpu, ProverConfig,
-    SNARK, checked_arkworks_encoding, prove_with_rng, public_hash, query_msm, solve_with_prepared,
-    tracking,
+    Bn254, BytecodeSource, CUR, ConstraintSource, Cpu, Fr, Groth16, Instant, PEAK, ProfiledCpu,
+    ProverConfig, Relaxed, SNARK, checked_arkworks_encoding, prove_with_rng, public_hash,
+    query_msm, solve_with_prepared, tracking,
 };
 
 struct Fixture {
@@ -43,7 +43,15 @@ pub(super) fn run(args: &[String]) {
     let [xbc, key, mode, concurrency, requests, directories @ ..] = args else {
         panic!("usage: warm-requests XBC KEY cpu|gls CONCURRENCY REQUESTS FIXTURE...");
     };
-    assert!(!tracking(), "use BENCH_TIME=1 for request timing");
+    let memory_trace = std::env::var("BENCH_MEMORY").as_deref() == Ok("1");
+    assert!(
+        !tracking() || memory_trace,
+        "use BENCH_TIME=1 for request timing or BENCH_MEMORY=1 for heap tracing"
+    );
+    assert!(
+        !memory_trace || tracking(),
+        "BENCH_MEMORY=1 requires allocation tracking; omit BENCH_TIME"
+    );
     let use_gls = match mode.as_str() {
         "cpu" => false,
         "gls" => true,
@@ -194,6 +202,14 @@ pub(super) fn run(args: &[String]) {
             eprintln!(
                 "request solver index={index} solve_ns={}",
                 solve_elapsed.as_nanos()
+            );
+        }
+        if memory_trace {
+            drop(proofs);
+            eprintln!(
+                "request memory completed={last} live_heap_bytes={} peak_heap_bytes={}",
+                CUR.load(Relaxed),
+                PEAK.load(Relaxed)
             );
         }
     }

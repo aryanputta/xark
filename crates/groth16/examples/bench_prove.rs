@@ -10,6 +10,7 @@
 //! bench_prove stream <circuit.xbc> <pk.bin> <inputs.json> [--source xbc|min] [--tile N] [--chunk N]
 //! BENCH_TIME=1 bench_prove warm <circuit.xbc> <reduced pk.bin> <inputs.json> [proofs] [warmups]
 //! BENCH_TIME=1 bench_prove warm-requests <circuit.xbc> <reduced pk.bin> <cpu|gls> <concurrency> <requests> <fixture-dir>...
+//! BENCH_MEMORY=1 bench_prove warm-requests <circuit.xbc> <reduced pk.bin> <cpu|gls> <concurrency> <requests> <fixture-dir>...
 //! BENCH_TIME=1 bench_prove query-msm <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-xark <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-b2-shifted <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
