@@ -1164,6 +1164,38 @@ fn note(
 /// One row's `(a, b)` with `a ≠ 0` for a var — any of them (the first to land).
 type Quadratic = std::sync::OnceLock<(crate::solver::Fp, crate::solver::Fp)>;
 
+/// Kept row coefficients are derived from the request witness. Wipe their BN254
+/// values on every return path, including a panic during the parallel row pass.
+struct QuadraticScratch(Vec<Quadratic>);
+
+impl QuadraticScratch {
+    fn clear_bn254(&mut self) {
+        use zeroize::Zeroize;
+        for (a, b) in self.0.iter_mut().filter_map(Quadratic::get_mut) {
+            if let crate::solver::Fp::Bn254(value) = a {
+                value.zeroize();
+            }
+            if let crate::solver::Fp::Bn254(value) = b {
+                value.zeroize();
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for QuadraticScratch {
+    type Target = [Quadratic];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for QuadraticScratch {
+    fn drop(&mut self) {
+        self.clear_bn254();
+    }
+}
+
 #[derive(Clone, Copy)]
 enum RowProgram<'a> {
     Symbolic(&'a [GDef], &'a [CItem]),
@@ -1187,16 +1219,16 @@ fn classify_and_check(
     modulus: &num_bigint::BigUint,
     num_vars: usize,
     check_sat: bool,
-) -> (Vec<std::sync::atomic::AtomicU8>, bool, Vec<Quadratic>) {
+) -> (Vec<std::sync::atomic::AtomicU8>, bool, QuadraticScratch) {
     use rayon::prelude::*;
     use std::sync::atomic::AtomicU8;
     let flags: Vec<AtomicU8> = (0..num_vars).map(|_| AtomicU8::new(0)).collect();
     // Only a satisfied witness can use them (see `two_valued_satisfied`).
-    let quadratic: Vec<Quadratic> = if check_sat {
+    let quadratic = QuadraticScratch(if check_sat {
         (0..num_vars).map(|_| Quadratic::new()).collect()
     } else {
         Vec::new()
-    };
+    });
     let (defs, top_c) = match program {
         RowProgram::Symbolic(defs, top_c) => (defs, top_c),
         RowProgram::Compiled(c) => {
@@ -1737,23 +1769,12 @@ impl PreparedStreamSolver {
         .map(bn254_witness_slots)
         .map_err(|e| format!("solve: {e:?}"))?;
         let program = RowProgram::Compiled(&self.rows);
-        let (flags, sat_ok, mut quadratic) =
+        let (flags, sat_ok, quadratic) =
             classify_and_check(program, &assign, &self.modulus, self.num_vars, true);
         if !sat_ok {
             use zeroize::Zeroize;
             for value in assign.iter_mut().flatten() {
                 if let crate::solver::Fp::Bn254(scalar) = value {
-                    scalar.zeroize();
-                }
-            }
-            for (a, b) in quadratic
-                .iter_mut()
-                .filter_map(std::sync::OnceLock::get_mut)
-            {
-                if let crate::solver::Fp::Bn254(scalar) = a {
-                    scalar.zeroize();
-                }
-                if let crate::solver::Fp::Bn254(scalar) = b {
                     scalar.zeroize();
                 }
             }
@@ -3399,6 +3420,23 @@ mod eval {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quadratic_scratch_clears_kept_bn254_coefficients() {
+        use crate::solver::Fp;
+        let coefficient = Quadratic::new();
+        coefficient
+            .set((
+                Fp::Bn254(ark_bn254::Fr::from(17u64)),
+                Fp::Bn254(ark_bn254::Fr::from(31u64)),
+            ))
+            .unwrap();
+        let mut scratch = QuadraticScratch(vec![coefficient, Quadratic::new()]);
+        scratch.clear_bn254();
+        let (a, b) = scratch[0].get().unwrap();
+        assert_eq!(a.as_bn254_fr(), Some(ark_bn254::Fr::from(0u64)));
+        assert_eq!(b.as_bn254_fr(), Some(ark_bn254::Fr::from(0u64)));
+    }
 
     fn row(a: u32, b: u32, c: u32) -> R1csRow {
         R1csRow {
