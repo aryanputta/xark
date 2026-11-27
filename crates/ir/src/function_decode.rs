@@ -1674,6 +1674,79 @@ pub struct PreparedStreamSolver {
     rows: eval::Compiled,
 }
 
+/// A checked BN254 witness indexed by variable id. Values belong to one
+/// request and are wiped when this owner drops, including during unwinding.
+pub struct CheckedWitnessSlots {
+    slots: Vec<Option<crate::solver::Fp>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SLOT_DROP_CHECK: std::cell::Cell<Option<(bool, bool)>> = const { std::cell::Cell::new(None) };
+}
+
+impl std::ops::Deref for CheckedWitnessSlots {
+    type Target = [Option<crate::solver::Fp>];
+
+    fn deref(&self) -> &Self::Target {
+        &self.slots
+    }
+}
+
+impl CheckedWitnessSlots {
+    /// Transfer ownership to the legacy map API. The returned map owns its
+    /// values and the caller is responsible for its cleanup.
+    pub fn into_map(mut self) -> BTreeMap<u32, crate::solver::Fp> {
+        crate::solver::slots_into_map(std::mem::take(&mut self.slots))
+    }
+}
+
+impl Drop for CheckedWitnessSlots {
+    fn drop(&mut self) {
+        #[cfg(test)]
+        use num_traits::Zero;
+        use zeroize::Zeroize;
+        #[cfg(test)]
+        let had_secret =
+            self.slots.iter().flatten().any(
+                |value| matches!(value, crate::solver::Fp::Bn254(scalar) if !scalar.is_zero()),
+            );
+        for value in self.slots.iter_mut().flatten() {
+            if let crate::solver::Fp::Bn254(scalar) = value {
+                scalar.zeroize();
+            }
+        }
+        #[cfg(test)]
+        SLOT_DROP_CHECK.with(|check| {
+            if check.get().is_some() {
+                check.set(Some((
+                    had_secret,
+                    self.slots.iter().flatten().all(|value| {
+                        matches!(value, crate::solver::Fp::Bn254(scalar) if scalar.is_zero())
+                    }),
+                )));
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn checked_slots_wipe_on_unwind() {
+    SLOT_DROP_CHECK.with(|check| check.set(Some((false, false))));
+    let failed = std::panic::catch_unwind(|| {
+        let _slots = CheckedWitnessSlots {
+            slots: vec![Some(crate::solver::Fp::Bn254(ark_bn254::Fr::from(7_u64)))],
+        };
+        panic!("request aborted after witness solving");
+    });
+    assert!(failed.is_err());
+    assert_eq!(
+        SLOT_DROP_CHECK.with(|check| check.replace(None)),
+        Some((true, true))
+    );
+}
+
 impl PreparedStreamSolver {
     /// Decode and compile a trusted circuit artifact before admitting requests.
     pub fn new(bytes: &[u8]) -> Result<Self, String> {
@@ -1724,17 +1797,17 @@ impl PreparedStreamSolver {
         inputs: &BTreeMap<u32, String>,
     ) -> Result<BTreeMap<u32, crate::solver::Fp>, String> {
         self.solve_satisfied_slots(inputs)
-            .map(crate::solver::slots_into_map)
+            .map(CheckedWitnessSlots::into_map)
     }
 
     /// The same checked assignment indexed by variable id, for provers whose
     /// layout consumes dense slots directly. Missing variables remain `None`.
     /// The returned slots contain private witness values and belong to this
-    /// request; callers must clear them after constructing the proof witness.
+    /// request; their owner wipes them on drop or unwind.
     pub fn solve_satisfied_slots(
         &self,
         inputs: &BTreeMap<u32, String>,
-    ) -> Result<Vec<Option<crate::solver::Fp>>, String> {
+    ) -> Result<CheckedWitnessSlots, String> {
         use rayon::prelude::*;
         use zeroize::Zeroize;
 
@@ -1774,7 +1847,7 @@ impl PreparedStreamSolver {
             }
             return Err("a constraint is unsatisfied".to_string());
         }
-        Ok(assign)
+        Ok(CheckedWitnessSlots { slots: assign })
     }
 
     /// Run the same full row and under-constraint analysis as [`stream_solve_verify`].

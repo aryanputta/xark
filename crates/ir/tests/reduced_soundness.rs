@@ -81,14 +81,10 @@ fn prepared_satisfaction_only_matches_witness_and_rejects_invalid_statement() {
     );
     assert_eq!(solver.solve_satisfied(&valid).unwrap(), expected);
     let dense = solver.solve_satisfied_slots(&valid).unwrap();
-    let from_dense: BTreeMap<_, _> = dense
-        .into_iter()
-        .enumerate()
-        .filter_map(|(id, value)| value.map(|value| (id as u32, value)))
-        .collect();
+    let from_dense = dense.into_map();
     assert_eq!(from_dense, expected);
     assert_eq!(
-        solver.solve_satisfied_slots(&invalid).unwrap_err(),
+        solver.solve_satisfied_slots(&invalid).err().unwrap(),
         solver.solve_satisfied(&invalid).unwrap_err()
     );
 }

@@ -50,11 +50,7 @@ fn main() {
         for input in &inputs {
             let map = solver.solve_satisfied(input).expect("map preflight");
             let slots = solver.solve_satisfied_slots(input).expect("slot preflight");
-            let from_slots: BTreeMap<_, _> = slots
-                .into_iter()
-                .enumerate()
-                .filter_map(|(id, value)| value.map(|value| (id as u32, value)))
-                .collect();
+            let from_slots = slots.into_map();
             assert_eq!(map, from_slots, "exact checked witness equivalence");
         }
         for iteration in 0..samples {

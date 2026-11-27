@@ -105,7 +105,7 @@ impl PreparedCpuProver {
                 .map_err(ProveError)
         })();
         decimal.values_mut().for_each(Zeroize::zeroize);
-        let mut assignment = solved?;
+        let assignment = solved?;
         let layout = self.rows.layout();
         let witness = Zeroizing::new(layout.assignment(|id| {
             assignment
@@ -113,11 +113,7 @@ impl PreparedCpuProver {
                 .and_then(Option::as_ref)
                 .and_then(Fp::as_bn254_fr)
         }));
-        for value in assignment.iter_mut().flatten() {
-            if let Fp::Bn254(scalar) = value {
-                scalar.zeroize();
-            }
-        }
+        drop(assignment);
         let proof = xark_groth16::prove(
             &*self.rows,
             &witness,
