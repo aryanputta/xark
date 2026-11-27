@@ -2951,7 +2951,11 @@ mod eval {
                                 }
                             }
                         }
-                        scratch.sort_unstable_by_key(|t| t.0);
+                        // Compiled rows often arrive in variable order. Plug
+                        // expansion may disturb it, so check the resolved ids.
+                        if scratch.windows(2).any(|pair| pair[0].0 > pair[1].0) {
+                            scratch.sort_unstable_by_key(|t| t.0);
+                        }
                         let mut k = 0;
                         while k < scratch.len() {
                             let v = scratch[k].0;
