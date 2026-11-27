@@ -21,6 +21,7 @@ use ark_ec::CurveGroup;
 use ark_ec::pairing::Pairing;
 use ark_ff::{PrimeField, UniformRand, Zero};
 use rand::RngCore;
+use zeroize::Zeroizing;
 
 use crate::accel::{Accelerator, Local, sum_g1, sum_g2, valid_msm_output};
 use crate::fft::FftConfig;
@@ -29,6 +30,8 @@ use crate::pk::{G1Query, KeyVector, PkError, PkSource};
 use crate::qap;
 use crate::r1cs::ConstraintSource;
 use crate::types::Prepared;
+
+type RequestScalars = Zeroizing<Vec<Scalar>>;
 
 /// Prover tuning.
 #[derive(Clone, Debug)]
@@ -240,7 +243,7 @@ fn accel_msm<P: PkSource + ?Sized>(
     accel: &mut dyn Accelerator,
     v: KeyVector,
     chunk: usize,
-    sc: &dyn Fn(usize, usize) -> Vec<Scalar>,
+    sc: &dyn Fn(usize, usize) -> RequestScalars,
 ) -> Result<Option<Vec<u8>>, PkError> {
     let g2 = v == KeyVector::BG2;
     if !accel.wants_msm() {
@@ -266,7 +269,7 @@ fn accel_msm<P: PkSource + ?Sized>(
         }
         let n = bytes.len() / point_bytes(v, compressed);
         let scalars = if off == 0 && first.len() == n {
-            std::mem::take(&mut first)
+            Zeroizing::new(std::mem::take(&mut *first))
         } else {
             sc(off, n)
         };
@@ -284,14 +287,15 @@ fn stream_msm_g1<P: PkSource + ?Sized>(
     accel: &mut dyn Accelerator,
     q: G1Query,
     chunk: usize,
-    sc: &dyn Fn(usize, usize) -> Vec<Scalar>,
+    sc: &dyn Fn(usize, usize) -> RequestScalars,
 ) -> Result<G1Projective, PkError> {
     if let Some(parts) = accel_msm(pk, accel, q.into(), chunk, sc)? {
         return Ok(sum_g1(&parts));
     }
     let mut acc = StreamingMsm::<G1Projective>::new();
     pk.stream_g1(q, chunk, &mut |off, pts: &[G1Affine]| {
-        acc.feed(pts, &sc(off, pts.len()));
+        let scalars = sc(off, pts.len());
+        acc.feed(pts, &scalars);
     })?;
     Ok(acc.finish())
 }
@@ -301,14 +305,15 @@ fn stream_msm_g2<P: PkSource + ?Sized>(
     pk: &mut P,
     accel: &mut dyn Accelerator,
     chunk: usize,
-    sc: &dyn Fn(usize, usize) -> Vec<Scalar>,
+    sc: &dyn Fn(usize, usize) -> RequestScalars,
 ) -> Result<G2Projective, PkError> {
     if let Some(parts) = accel_msm(pk, accel, KeyVector::BG2, chunk, sc)? {
         return Ok(sum_g2(&parts));
     }
     let mut acc = StreamingMsm::<G2Projective>::new();
     pk.stream_g2(chunk, &mut |off, pts: &[G2Affine]| {
-        acc.feed(pts, &sc(off, pts.len()));
+        let scalars = sc(off, pts.len());
+        acc.feed(pts, &scalars);
     })?;
     Ok(acc.finish())
 }
@@ -336,7 +341,8 @@ fn prove_merged<S: ConstraintSource + ?Sized>(
 ) -> Result<Proof<Bn254>, ProveError> {
     use crate::msm::msm;
     let ninst = key.vk.gamma_abc_g1.len();
-    let zs: Vec<Scalar> = z.iter().map(|x| x.into_bigint()).collect();
+    let mut zs = RequestScalars::new(Vec::with_capacity(z.len()));
+    zs.extend(z.iter().map(|x| x.into_bigint()));
     let one = Fr::from(1u64).into_bigint();
     let (mut ab, mut rest, mut prep) = (None, None, None);
     let check = cfg.self_check;
@@ -351,14 +357,16 @@ fn prove_merged<S: ConstraintSource + ?Sized>(
                 || {
                     let mut pts = key.b_g2_query.clone();
                     pts.push(key.vk.beta_g2);
-                    let mut k = zs.clone();
+                    let mut k = RequestScalars::new(Vec::with_capacity(zs.len() + 1));
+                    k.extend_from_slice(&zs);
                     k.push(one);
                     msm::<G2Projective>(&pts, &k)
                 },
                 || {
                     let mut pts = key.a_query.clone();
                     pts.extend([key.vk.alpha_g1, key.delta_g1]);
-                    let mut k = zs.clone();
+                    let mut k = RequestScalars::new(Vec::with_capacity(zs.len() + 2));
+                    k.extend_from_slice(&zs);
                     k.extend([one, r.into_bigint()]);
                     msm::<G1Projective>(&pts, &k)
                 },
@@ -376,7 +384,7 @@ fn prove_merged<S: ConstraintSource + ?Sized>(
                     quotient_for(src, z, dom, cfg, &mut Local, &mut ()).map(|h| {
                         let n = key.b_g1_query.len() + key.l_query.len() + key.h_query.len() + 1;
                         let mut pts = Vec::with_capacity(n);
-                        let mut k = Vec::with_capacity(n);
+                        let mut k = RequestScalars::new(Vec::with_capacity(n));
                         if !r.is_zero() {
                             pts.push(key.beta_g1);
                             k.push(r.into_bigint());
@@ -386,7 +394,8 @@ fn prove_merged<S: ConstraintSource + ?Sized>(
                         pts.extend_from_slice(&key.l_query);
                         k.extend_from_slice(&zs[ninst..]);
                         pts.extend_from_slice(&key.h_query);
-                        k.extend(h.chunk(0, key.h_query.len()));
+                        let h_scalars = RequestScalars::new(h.chunk(0, key.h_query.len()));
+                        k.extend_from_slice(&h_scalars);
                         msm::<G1Projective>(&pts, &k)
                     })
                 },
@@ -426,12 +435,13 @@ fn prove_merged<S: ConstraintSource + ?Sized>(
 fn resident_msm<G: SwCurve>(
     v: &[G::Affine],
     chunk: usize,
-    sc: &(dyn Fn(usize, usize) -> Vec<Scalar> + Sync),
+    sc: &(dyn Fn(usize, usize) -> RequestScalars + Sync),
 ) -> G {
     let chunk = chunk.max(1);
     let mut acc = StreamingMsm::<G>::new();
     for (i, c) in v.chunks(chunk).enumerate() {
-        acc.feed(c, &sc(i * chunk, c.len()));
+        let scalars = sc(i * chunk, c.len());
+        acc.feed(c, &scalars);
     }
     acc.finish()
 }
@@ -576,13 +586,15 @@ where
     let hdr = pk.header().clone();
 
     // Witness scalars for key positions [off, off+len), converted per chunk.
-    let z_sc = |off: usize, len: usize| -> Vec<Scalar> {
+    let z_sc = |off: usize, len: usize| -> RequestScalars {
         use rayon::prelude::*;
-        z[off..off + len]
-            .par_iter()
+        let mut scalars = RequestScalars::new(vec![Scalar::default(); len]);
+        scalars
+            .par_iter_mut()
             .with_min_len(1 << 12)
-            .map(|x| x.into_bigint())
-            .collect()
+            .zip(&z[off..off + len])
+            .for_each(|(slot, witness)| *slot = witness.into_bigint());
+        scalars
     };
     let aux_sc = |off: usize, len: usize| z_sc(ninst + off, len);
 
@@ -632,7 +644,7 @@ where
             sc.spawn(|_| {
                 h = Some((|| {
                     let q = quotient_for(src, z, &dom, cfg, dev, &mut ())?;
-                    let h_sc = |off, len| q.chunk(off, len);
+                    let h_sc = |off, len| RequestScalars::new(q.chunk(off, len));
                     Ok::<_, ProveError>(stream_msm_g1(&mut *h_pk, dev, G1Query::H, chunk, &h_sc)?)
                 })());
             });
@@ -689,7 +701,9 @@ where
                     })
                     .map(|h| {
                         time_resident(timings, "msm_h", || {
-                            resident_msm(&key.h_query, chunk, &|off, len| h.chunk(off, len))
+                            resident_msm(&key.h_query, chunk, &|off, len| {
+                                RequestScalars::new(h.chunk(off, len))
+                            })
                         })
                     }),
                 );
@@ -819,7 +833,9 @@ where
             Some(d) => d,
             None => accel,
         };
-        let hq = stream_msm_g1(pk, accel, G1Query::H, chunk, &|off, len| h.chunk(off, len))?;
+        let hq = stream_msm_g1(pk, accel, G1Query::H, chunk, &|off, len| {
+            RequestScalars::new(h.chunk(off, len))
+        })?;
         drop(h);
         probe.mark("msm_h");
         let l = stream_msm_g1(pk, accel, G1Query::L, chunk, &aux_sc)?;

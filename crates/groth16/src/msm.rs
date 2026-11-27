@@ -738,12 +738,14 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
     };
     // Each task takes thousands of scalars: a few hundred would wake the whole
     // pool for microseconds of work.
-    let classes: [Vec<u32>; 6] = (0..n)
+    // Entries carry witness-dependent magnitude classes and signs. Keep the
+    // buffers request-local and clear them when MSM accumulation finishes.
+    let classes: Zeroizing<[Vec<u32>; 6]> = (0..n)
         .into_par_iter()
         .with_min_len(4096)
         .fold(
-            || std::array::from_fn(|_| Vec::new()),
-            |mut acc: [Vec<u32>; 6], i| {
+            || Zeroizing::new(std::array::from_fn(|_| Vec::new())),
+            |mut acc: Zeroizing<[Vec<u32>; 6]>, i| {
                 if let Some((c, e)) = classify(i) {
                     acc[c].push(e);
                 }
@@ -751,14 +753,12 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
             },
         )
         .reduce(
-            || std::array::from_fn(|_| Vec::new()),
+            || Zeroizing::new(std::array::from_fn(|_| Vec::new())),
             |mut a, b| {
-                for (x, y) in a.iter_mut().zip(b) {
-                    if x.is_empty() {
-                        *x = y;
-                    } else {
-                        x.extend(y);
-                    }
+                // Copy before b's guard clears its old allocation. Moving a
+                // Vec would deallocate that allocation without wiping it.
+                for (x, y) in a.iter_mut().zip(b.iter()) {
+                    x.extend_from_slice(y);
                 }
                 a
             },
