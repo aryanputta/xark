@@ -1,6 +1,9 @@
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from host_control import assess
+from host_control import assess, run
 
 
 def matrix():
@@ -13,6 +16,19 @@ def matrix():
 
 
 class HostControlTests(unittest.TestCase):
+    def test_unpinned_host_rejected_before_output_or_proofs(self):
+        args = SimpleNamespace(workers=2, output=Path("/does-not-need-to-exist"))
+        binding = {"node": "host", "boot_id": None, "affinity": None}
+        with (
+            patch("host_control.host_binding", return_value=binding),
+            patch(
+                "host_control.subprocess.Popen",
+                side_effect=AssertionError("prover launched"),
+            ),
+            self.assertRaisesRegex(ValueError, "Linux boot identity"),
+        ):
+            run(args)
+
     def test_identical_runs_pass(self):
         result = assess(matrix(), 2, 0.02, 0.10)
         self.assertTrue(result["passed"])

@@ -15,6 +15,18 @@ from pathlib import Path
 from batch_parser import digest, parse
 
 
+def host_binding():
+    boot_id = Path("/proc/sys/kernel/random/boot_id")
+    return {
+        "node": platform.node(),
+        "platform": platform.platform(),
+        "boot_id": boot_id.read_text().strip() if boot_id.exists() else None,
+        "affinity": sorted(os.sched_getaffinity(0))
+        if hasattr(os, "sched_getaffinity")
+        else None,
+    }
+
+
 def p95(values):
     ordered = sorted(values)
     return ordered[math.ceil(0.95 * len(ordered)) - 1]
@@ -63,8 +75,19 @@ def assess(rows, blocks, max_median_drift, max_p95_drift):
 
 
 def run(args):
+    binding = host_binding()
+    if (
+        not binding["boot_id"]
+        or not binding["affinity"]
+        or len(binding["affinity"]) != args.workers
+    ):
+        raise ValueError(
+            "host control requires Linux boot identity and exact worker affinity"
+        )
     if args.output.exists():
         raise ValueError("output directory already exists")
+    binary_hash = digest(args.binary)
+    manifest_hash = digest(args.manifest)
     args.output.mkdir(mode=0o700)
     manifest = dict(
         (name, expected)
@@ -173,11 +196,22 @@ def run(args):
                     ),
                     flush=True,
                 )
+    if (
+        digest(args.binary) != binary_hash
+        or digest(args.manifest) != manifest_hash
+        or host_binding() != binding
+        or any(
+            digest(args.fixtures / name) != expected
+            for name, expected in manifest.items()
+        )
+    ):
+        raise ValueError("binary, fixtures, or host changed during host control")
     assessment = assess(rows, args.blocks, args.max_median_drift, args.max_p95_drift)
     report = dict(
-        binary_sha256=digest(args.binary),
-        manifest_sha256=digest(args.manifest),
+        binary_sha256=binary_hash,
+        manifest_sha256=manifest_hash,
         host=platform.platform(),
+        host_binding=binding,
         workers=args.workers,
         concurrency=args.concurrency,
         requests=args.requests,

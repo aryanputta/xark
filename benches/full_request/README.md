@@ -27,3 +27,22 @@ python3 benches/full_request/host_control.py /path/to/bench_verified_warm \
 ```
 
 Use a new output directory for each attempt. Run both concurrency 1 and 2 before qualifying complete-request latency and throughput. Keep the synthetic witness inputs and keys on the authorized host; only the aggregate timing receipts are archived here. The eight process stdout/stderr logs were screened for scalar, witness and input values before committing.
+
+## Gated prepared CPU comparison
+
+`replay.py` runs exact upstream, prepared CPU and prepared GLS complete requests in balanced order. Supply an independently built candidate `bench_prove` supporting `warm-requests` and the same pinned private fixtures. The replay requires a passing `host_control.py` report from the **same upstream executable**, fixture manifest, host boot, CPU affinity and two-worker budget. It recomputes the gate, rejects looser thresholds or a stale report before launching proofs, and rechecks the inputs and host after the run. The comparison report retains `performance_eligible: false` pending a separate timing and security audit.
+
+```sh
+python3 -m unittest discover -s benches/full_request -p 'test_*.py'
+taskset -c "$CPU_LIST" python3 benches/full_request/host_control.py \
+  /path/to/bench_verified_warm /path/to/private-fixtures \
+  /path/to/fixtures.sha256 /path/to/new-host-control \
+  --requests 8 --blocks 2 --workers 2 --concurrency 1
+taskset -c "$CPU_LIST" python3 benches/full_request/replay.py \
+  /path/to/bench_verified_warm /path/to/candidate-bench_prove \
+  /path/to/private-fixtures /path/to/fixtures.sha256 /path/to/new-replay \
+  --requests 8 --blocks 3 --workers 2 \
+  --host-control-report /path/to/new-host-control/report.json
+```
+
+Both commands require the same Linux CPU affinity of exactly two allowed CPUs. The host gate is a stability screen. A performance conclusion still needs at least 100 measured requests for promising arms, checks for contention and order effects, and independent reproduction. The private offline bundle and fixture checksums are maintained outside this public repository.
