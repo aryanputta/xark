@@ -1,0 +1,364 @@
+{
+  "version": 1,
+  "mode": "live",
+  "status": "verified",
+  "started_at_utc": "2026-11-27T02:53:14.662580+00:00",
+  "fixture_archive_sha256": "82caa7cee2b155afc2bd32cdc9661ba8cfb758888f4837bf9d6af31eb05c36a7",
+  "runner_commit": "3f72ebb93bddf5558cbe1ca7caf6b01f51d14654",
+  "workloads": [
+    "escrow",
+    "withdrawal"
+  ],
+  "competitors": [
+    "xark"
+  ],
+  "sources": {
+    "xark": {
+      "path": "/Users/srini/worktrees/xark-prepared-quadratic-wipe",
+      "commit": "7cd0e9076dd1e59267c1a25c16462b5dec4b774e"
+    }
+  },
+  "xark_build_provenance": "self_consistent",
+  "artifacts": {
+    "config": {
+      "path": "/private/tmp/xark-competitive-v2-config.json",
+      "sha256": "9c6e68663476a6621f36d098db68628cc59c9e8b1ffae06d8a75e025f003e629"
+    },
+    "harness": {
+      "path": "/Users/srini/worktrees/xark-competitive-build-provenance/benches/competitive/run.py",
+      "sha256": "a693fc6fc033da419e9b11e6684dbfb6f4456670542296003ce82361b9d075cd"
+    },
+    "fixture_manifest": {
+      "path": "/Users/srini/worktrees/xark-competitive-build-provenance/benches/competitive/fixtures.sha256",
+      "sha256": "2c45d40821b98c428cbd48c6cbd55c42f4b8e61b866a7912e92f46f2ae77fca1"
+    },
+    "python": {
+      "path": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13",
+      "sha256": "8116faf25ab40b24bc5cd512ba42e6186464892a6d5d696954f18bc2be4f1072"
+    },
+    "bench": {
+      "path": "/private/tmp/xark-competitive-provenance-real-20261127-b/ci/examples/bench_prove",
+      "sha256": "f02272bed2889c1696c4c0d339406282765aba84277da29c82df8b7fd41edfd0"
+    },
+    "xark_build_manifest": {
+      "path": "/private/tmp/xark-competitive-provenance-real-20261127-b/xark-build-manifest.json",
+      "sha256": "f62b9c9f312e92b712c3b1d4cd0cf6313c7490a0bd0d21ffc0c77d6f5b5e9aa5"
+    },
+    "escrow/circuit.xbc": {
+      "path": "/private/tmp/xark-competitive-v2-fixtures/escrow/circuit.xbc",
+      "sha256": "08b3fe2bb59990fdc1c80b79e8a848175fd09fd5ad6ca22e60524a192c6cc1a0"
+    },
+    "escrow/test-key.bin": {
+      "path": "/private/tmp/xark-competitive-v2-fixtures/escrow/test-key.bin",
+      "sha256": "6811b728ff815221bd7b9cf4b1563a01500e917559275db55d7376f6b8139ba4"
+    },
+    "escrow/inputs.json": {
+      "path": "/private/tmp/xark-competitive-v2-fixtures/escrow/inputs.json",
+      "sha256": "8f760250e40ba5495e25e7743801ebcee9a5c5d5aac46eaf8e0038499809a7de"
+    },
+    "escrow/public.json": {
+      "path": "/private/tmp/xark-competitive-v2-fixtures/escrow/public.json",
+      "sha256": "d7c77dee9e1e557c6a4300c7346aa01e381424ccded2617c04ec2df56cc41d8b"
+    },
+    "escrow/public-changed.json": {
+      "path": "/private/tmp/xark-competitive-v2-fixtures/escrow/public-changed.json",
+      "sha256": "9e1a8d4f88ccffde715a6b85a4df923d8e23e0cd8b9b61fc28be5a69b1a404ae"
+    },
+    "withdrawal/circuit.xbc": {
+      "path": "/private/tmp/xark-competitive-v2-fixtures/withdrawal/circuit.xbc",
+      "sha256": "30e1457e8de7935ce12c90725fbf5b089e042db1e818e39f45ef4bc47dede7d4"
+    },
+    "withdrawal/test-key.bin": {
+      "path": "/private/tmp/xark-competitive-v2-fixtures/withdrawal/test-key.bin",
+      "sha256": "4b2b8f1d025963ea34c45897654f8d50bc2f5896967c1465f624ecd068a83b91"
+    },
+    "withdrawal/inputs.json": {
+      "path": "/private/tmp/xark-competitive-v2-fixtures/withdrawal/inputs.json",
+      "sha256": "748904e0e25b0a7cd47234341d6c908c080385bb027cda10bf6214a21bcd04bd"
+    },
+    "withdrawal/public.json": {
+      "path": "/private/tmp/xark-competitive-v2-fixtures/withdrawal/public.json",
+      "sha256": "fb3b3a8d2b1be15db025b49cdd2ddc6defdce1ed34d661ea0285a3ac4fd0b635"
+    },
+    "withdrawal/public-changed.json": {
+      "path": "/private/tmp/xark-competitive-v2-fixtures/withdrawal/public-changed.json",
+      "sha256": "9e1a8d4f88ccffde715a6b85a4df923d8e23e0cd8b9b61fc28be5a69b1a404ae"
+    }
+  },
+  "hardware": {
+    "platform": "macOS-26.5.1-x86_64-i386-64bit-Mach-O",
+    "cpu": null,
+    "architecture": "x86_64",
+    "online_cpus": 16,
+    "affinity": null,
+    "cpu_max": null,
+    "cpu_topology": {
+      "hw.physicalcpu": null,
+      "hw.logicalcpu": null,
+      "hw.memsize": null
+    }
+  },
+  "budget": {
+    "threads": 2,
+    "samples": 2,
+    "warmups": 1,
+    "pairs": 2,
+    "timeout_seconds": 300,
+    "environment": {
+      "BENCH_TIME": "1",
+      "BENCH_WARM_BACKEND": "cpu",
+      "BENCH_MERGE_BELOW": "0",
+      "RAYON_NUM_THREADS": "2",
+      "GOMAXPROCS": "2",
+      "OMP_NUM_THREADS": "2",
+      "OMP_THREAD_LIMIT": "2",
+      "OMP_DYNAMIC": "FALSE",
+      "LC_ALL": "C"
+    }
+  },
+  "contention": {
+    "process_cpu_percent_threshold": 35,
+    "strict": false,
+    "flagged_steps": [
+      "escrow-xark-1-xark.log",
+      "escrow-xark-2-xark.log",
+      "withdrawal-xark-1-xark.log",
+      "withdrawal-xark-2-xark.log"
+    ]
+  },
+  "timing_boundaries": {
+    "xark_checked": "Resident witness row checks and proving; excludes key load and verification",
+    "gnark": "Resident checked proving; excludes setup, key load and verification",
+    "xark_rapidsnark": "Resident proving; excludes witness checks, key load, verification and serialization",
+    "rapidsnark": "Resident C ABI proving including witness decoding and JSON output; excludes witness checks, key load and verification",
+    "query": "Synchronous resident MSM for a single query; excludes input parsing and verification"
+  },
+  "steps": [
+    {
+      "argv": [
+        "/private/tmp/xark-competitive-provenance-real-20261127-b/ci/examples/bench_prove",
+        "warm",
+        "/private/tmp/xark-competitive-v2-fixtures/escrow/circuit.xbc",
+        "/private/tmp/xark-competitive-v2-fixtures/escrow/test-key.bin",
+        "/private/tmp/xark-competitive-v2-fixtures/escrow/inputs.json",
+        "2",
+        "1"
+      ],
+      "environment": {
+        "BENCH_PUBLIC_STATEMENTS": "/private/tmp/xark-competitive-v2-fixtures/escrow",
+        "BENCH_CHECK_ROWS": "1"
+      },
+      "log": "escrow-xark-1-xark.log",
+      "exit": 0,
+      "log_sha256": "92629696464b0386758e6c25b10a33ca815eef99fdf31df232db1fba83f68b26",
+      "contention": {
+        "polls": 0,
+        "observed": [],
+        "error": "[Errno 1] Operation not permitted: 'ps'",
+        "load_average_before": [
+          3.490234375,
+          6.900390625,
+          7.7294921875
+        ],
+        "load_average_after": [
+          3.490234375,
+          6.900390625,
+          7.7294921875
+        ]
+      },
+      "verification": "Each proof checked with Arkworks and Xark"
+    },
+    {
+      "argv": [
+        "/private/tmp/xark-competitive-provenance-real-20261127-b/ci/examples/bench_prove",
+        "warm",
+        "/private/tmp/xark-competitive-v2-fixtures/escrow/circuit.xbc",
+        "/private/tmp/xark-competitive-v2-fixtures/escrow/test-key.bin",
+        "/private/tmp/xark-competitive-v2-fixtures/escrow/inputs.json",
+        "2",
+        "1"
+      ],
+      "environment": {
+        "BENCH_PUBLIC_STATEMENTS": "/private/tmp/xark-competitive-v2-fixtures/escrow",
+        "BENCH_CHECK_ROWS": "1"
+      },
+      "log": "escrow-xark-2-xark.log",
+      "exit": 0,
+      "log_sha256": "6b30b943673733e805a0d124ad8dfb577481bffcefe2ce2f97c658748892cb29",
+      "contention": {
+        "polls": 0,
+        "observed": [],
+        "error": "[Errno 1] Operation not permitted: 'ps'",
+        "load_average_before": [
+          3.490234375,
+          6.900390625,
+          7.7294921875
+        ],
+        "load_average_after": [
+          3.37060546875,
+          6.81884765625,
+          7.69580078125
+        ]
+      },
+      "verification": "Each proof checked with Arkworks and Xark"
+    },
+    {
+      "argv": [
+        "/private/tmp/xark-competitive-provenance-real-20261127-b/ci/examples/bench_prove",
+        "warm",
+        "/private/tmp/xark-competitive-v2-fixtures/withdrawal/circuit.xbc",
+        "/private/tmp/xark-competitive-v2-fixtures/withdrawal/test-key.bin",
+        "/private/tmp/xark-competitive-v2-fixtures/withdrawal/inputs.json",
+        "2",
+        "1"
+      ],
+      "environment": {
+        "BENCH_PUBLIC_STATEMENTS": "/private/tmp/xark-competitive-v2-fixtures/withdrawal",
+        "BENCH_CHECK_ROWS": "1"
+      },
+      "log": "withdrawal-xark-1-xark.log",
+      "exit": 0,
+      "log_sha256": "9a336cef2935fb09309b31fb1007f8350eb9a21ea82cbaff46dacdb2c8782f26",
+      "contention": {
+        "polls": 0,
+        "observed": [],
+        "error": "[Errno 1] Operation not permitted: 'ps'",
+        "load_average_before": [
+          3.37060546875,
+          6.81884765625,
+          7.69580078125
+        ],
+        "load_average_after": [
+          3.37060546875,
+          6.81884765625,
+          7.69580078125
+        ]
+      },
+      "verification": "Each proof checked with Arkworks and Xark"
+    },
+    {
+      "argv": [
+        "/private/tmp/xark-competitive-provenance-real-20261127-b/ci/examples/bench_prove",
+        "warm",
+        "/private/tmp/xark-competitive-v2-fixtures/withdrawal/circuit.xbc",
+        "/private/tmp/xark-competitive-v2-fixtures/withdrawal/test-key.bin",
+        "/private/tmp/xark-competitive-v2-fixtures/withdrawal/inputs.json",
+        "2",
+        "1"
+      ],
+      "environment": {
+        "BENCH_PUBLIC_STATEMENTS": "/private/tmp/xark-competitive-v2-fixtures/withdrawal",
+        "BENCH_CHECK_ROWS": "1"
+      },
+      "log": "withdrawal-xark-2-xark.log",
+      "exit": 0,
+      "log_sha256": "5af491ba06a099fcfa188f9b1d59b3c5d11b8e56c1fdaa9d75202cd3a46a0b10",
+      "contention": {
+        "polls": 0,
+        "observed": [],
+        "error": "[Errno 1] Operation not permitted: 'ps'",
+        "load_average_before": [
+          3.37060546875,
+          6.81884765625,
+          7.69580078125
+        ],
+        "load_average_after": [
+          3.37060546875,
+          6.81884765625,
+          7.69580078125
+        ]
+      },
+      "verification": "Each proof checked with Arkworks and Xark"
+    }
+  ],
+  "comparisons": [
+    {
+      "workload": "escrow",
+      "competitor": "xark",
+      "lane": "checked-resident-proof",
+      "pair": 1,
+      "order": [
+        "xark"
+      ],
+      "median_ns": {
+        "xark": {
+          "proof": 169999000.0
+        }
+      },
+      "competitor_over_xark": null,
+      "contention_flagged": true
+    },
+    {
+      "workload": "escrow",
+      "competitor": "xark",
+      "lane": "checked-resident-proof",
+      "pair": 2,
+      "order": [
+        "xark"
+      ],
+      "median_ns": {
+        "xark": {
+          "proof": 162144500.0
+        }
+      },
+      "competitor_over_xark": null,
+      "contention_flagged": true
+    },
+    {
+      "workload": "withdrawal",
+      "competitor": "xark",
+      "lane": "checked-resident-proof",
+      "pair": 1,
+      "order": [
+        "xark"
+      ],
+      "median_ns": {
+        "xark": {
+          "proof": 130971000.0
+        }
+      },
+      "competitor_over_xark": null,
+      "contention_flagged": true
+    },
+    {
+      "workload": "withdrawal",
+      "competitor": "xark",
+      "lane": "checked-resident-proof",
+      "pair": 2,
+      "order": [
+        "xark"
+      ],
+      "median_ns": {
+        "xark": {
+          "proof": 134716000.0
+        }
+      },
+      "competitor_over_xark": null,
+      "contention_flagged": true
+    }
+  ],
+  "summary": [
+    {
+      "workload": "escrow",
+      "competitor": "xark",
+      "lane": "checked-resident-proof",
+      "backend": "xark",
+      "metric": "proof",
+      "count": 4,
+      "p50_ns": 166232000.0,
+      "p95_ns": 170756000,
+      "p99_ns": 170756000
+    },
+    {
+      "workload": "withdrawal",
+      "competitor": "xark",
+      "lane": "checked-resident-proof",
+      "backend": "xark",
+      "metric": "proof",
+      "count": 4,
+      "p50_ns": 134278000.0,
+      "p95_ns": 136713000,
+      "p99_ns": 136713000
+    }
+  ]
+}

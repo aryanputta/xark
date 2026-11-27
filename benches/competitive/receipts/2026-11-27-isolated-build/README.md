@@ -14,4 +14,8 @@ The stacked [feat/competitive-build-provenance](https://github.com/aryanputta/xa
 
 The first offline attempt used the default Cargo home and failed before compilation because `ark-relations` was missing; [failure log](failed-default-cache.stderr). The successful attempt used the prepared locked dependency cache and a *new* target directory. [Successful Cargo log](build.stderr). Brain triage case `72c7851969caa4bc` records this resolved environment issue.
 
+## Version-2 runner execution
+
+The updated runner at `3f72ebb` also completed an Xark-only two-pair replay on both checked Privacy Rings fixtures from the original offline archive (SHA256 `82caa7cee2b155afc2bd32cdc9661ba8cfb758888f4837bf9d6af31eb05c36a7`). The archive was path/type inspected before extraction and all ten fixture file hashes passed. The runner consumed [version-2 config](v2-config.json) and the build manifest above, then produced [raw JSON](v2-smoke/report.json), [CSV](v2-smoke/samples.csv.gz) (gzip SHA256 `429f87bcef250aa39eef24df14cb047f04331d08e2d5fd0cfea3404cb37fc1aa`), and four per-block logs in `v2-smoke/`. The report marks `xark_build_provenance: self_consistent` and repeats exact binary and manifest hashes. All eight measured proofs passed the Xark and Arkworks checks; each changed statement was rejected by both. Two threads, one warmup, two samples and two pairs were used per circuit. No competitor was selected, and the shared-Mac timings are not performance evidence.
+
 The Mac is shared and this run lacks a same-binary host control. Timings in the smoke outputs are diagnostics only. A qualified Linux host is still required for competitive latency and throughput claims.

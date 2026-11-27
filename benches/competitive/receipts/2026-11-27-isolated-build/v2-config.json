@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "fixtures": "/private/tmp/xark-competitive-v2-fixtures",
+  "sources": {
+    "xark": {
+      "path": "/Users/srini/worktrees/xark-prepared-quadratic-wipe",
+      "commit": "7cd0e9076dd1e59267c1a25c16462b5dec4b774e"
+    }
+  },
+  "binaries": {
+    "bench": "/private/tmp/xark-competitive-provenance-real-20261127-b/ci/examples/bench_prove"
+  },
+  "xark_build_manifest": "/private/tmp/xark-competitive-provenance-real-20261127-b/xark-build-manifest.json",
+  "additional_artifacts": {}
+}

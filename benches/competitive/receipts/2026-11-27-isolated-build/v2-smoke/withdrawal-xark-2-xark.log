@@ -1,0 +1,9 @@
+resident CPU: a_query_len=5406 merge_below=0 merged=false
+resident includes row checks: true
+witness row checker: compiled
+warm proofs verified by Arkworks and Xark: xark-groth16 warmups=1 measured=2
+changed statement rejected by Arkworks and Xark for each backend
+warm prove: xark-groth16 0.136713s
+warm prove: xark-groth16 0.132719s
+warm row check: xark-groth16 4532152 ns
+warm row check: xark-groth16 4194607 ns
