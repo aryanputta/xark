@@ -34,6 +34,12 @@ pub mod access_audit {
     pub(super) static SPILL_ADDS: AtomicU64 = AtomicU64::new(0);
     pub(super) static NONEMPTY_FLUSHES: AtomicU64 = AtomicU64::new(0);
     pub(super) static PROJECTIVE_UPDATES: AtomicU64 = AtomicU64::new(0);
+    pub(super) static G1_THRESHOLD_CHECKS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static G1_POST_DRAIN_257_TO_384: AtomicU64 = AtomicU64::new(0);
+    pub(super) static FULL_QUEUE_SPILL_EVENTS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static FULL_QUEUE_SPILL_ADDS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static FINISH_SPILL_EVENTS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static FINISH_SPILL_ADDS: AtomicU64 = AtomicU64::new(0);
 
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     pub struct Counts {
@@ -45,6 +51,12 @@ pub mod access_audit {
         pub spill_adds: u64,
         pub nonempty_flushes: u64,
         pub projective_updates: u64,
+        pub g1_threshold_checks: u64,
+        pub g1_post_drain_257_to_384: u64,
+        pub full_queue_spill_events: u64,
+        pub full_queue_spill_adds: u64,
+        pub finish_spill_events: u64,
+        pub finish_spill_adds: u64,
     }
 
     /// Use around one sequential synthetic MSM invocation, with one test
@@ -59,6 +71,12 @@ pub mod access_audit {
             spill_adds: SPILL_ADDS.swap(0, Ordering::Relaxed),
             nonempty_flushes: NONEMPTY_FLUSHES.swap(0, Ordering::Relaxed),
             projective_updates: PROJECTIVE_UPDATES.swap(0, Ordering::Relaxed),
+            g1_threshold_checks: G1_THRESHOLD_CHECKS.swap(0, Ordering::Relaxed),
+            g1_post_drain_257_to_384: G1_POST_DRAIN_257_TO_384.swap(0, Ordering::Relaxed),
+            full_queue_spill_events: FULL_QUEUE_SPILL_EVENTS.swap(0, Ordering::Relaxed),
+            full_queue_spill_adds: FULL_QUEUE_SPILL_ADDS.swap(0, Ordering::Relaxed),
+            finish_spill_events: FINISH_SPILL_EVENTS.swap(0, Ordering::Relaxed),
+            finish_spill_adds: FINISH_SPILL_ADDS.swap(0, Ordering::Relaxed),
         }
     }
 }
@@ -68,6 +86,18 @@ macro_rules! audit_inc {
     ($counter:ident) => {
         access_audit::$counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     };
+}
+
+#[cfg(feature = "msm-access-audit")]
+macro_rules! audit_add {
+    ($counter:ident, $value:expr) => {
+        access_audit::$counter.fetch_add($value, std::sync::atomic::Ordering::Relaxed);
+    };
+}
+
+#[cfg(not(feature = "msm-access-audit"))]
+macro_rules! audit_add {
+    ($counter:ident, $value:expr) => {};
 }
 
 #[cfg(not(feature = "msm-access-audit"))]
@@ -164,6 +194,16 @@ pub static GLV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// Additions per shared inversion.
 const BATCH: usize = 512;
 
+#[cfg(feature = "msm-g1-spill-threshold-audit")]
+static G1_LATER_SPILL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Toggle the experimental G1 post-drain spill threshold for same-binary audits.
+#[cfg(feature = "msm-g1-spill-threshold-audit")]
+#[doc(hidden)]
+pub fn set_bench_g1_later_spill(enabled: bool) {
+    G1_LATER_SPILL.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[cfg(feature = "msm-g2-endpoint-bench")]
 static G2_TRIM_INVERSE_ENDPOINTS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -259,7 +299,23 @@ impl<G: SwCurve> AffineBuckets<G> {
             if self.queue.len() == BATCH {
                 self.flush();
                 self.drain();
-                if self.queue.len() > BATCH / 2 {
+                #[cfg(feature = "msm-g1-spill-threshold-audit")]
+                let mut spill_threshold = BATCH / 2;
+                #[cfg(feature = "msm-g1-spill-threshold-audit")]
+                if G::BaseField::extension_degree() == 1
+                    && G1_LATER_SPILL.load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    audit_inc!(G1_THRESHOLD_CHECKS);
+                    if (BATCH / 2 + 1..=3 * BATCH / 4).contains(&self.queue.len()) {
+                        audit_inc!(G1_POST_DRAIN_257_TO_384);
+                    }
+                    spill_threshold = 3 * BATCH / 4;
+                }
+                #[cfg(not(feature = "msm-g1-spill-threshold-audit"))]
+                let spill_threshold = BATCH / 2;
+                if self.queue.len() > spill_threshold {
+                    audit_inc!(FULL_QUEUE_SPILL_EVENTS);
+                    audit_add!(FULL_QUEUE_SPILL_ADDS, self.queue.len() as u64);
                     self.spill();
                 }
             }
@@ -386,6 +442,8 @@ impl<G: SwCurve> AffineBuckets<G> {
             self.flush();
         }
         if !self.queue.is_empty() {
+            audit_inc!(FINISH_SPILL_EVENTS);
+            audit_add!(FINISH_SPILL_ADDS, self.queue.len() as u64);
             self.spill();
         }
         (self.x, self.y, self.used, self.side)

@@ -414,6 +414,62 @@ mod tests {
     use super::*;
     use ark_bn254::{Fq, Fr};
 
+    #[cfg(feature = "msm-access-audit")]
+    #[test]
+    fn pinned_b1_bucket_pressure_matches_arkworks() {
+        use zeroize::Zeroizing;
+
+        let root = std::env::var("XARK_SYNTHETIC_FIXTURE_ROOT")
+            .expect("set XARK_SYNTHETIC_FIXTURE_ROOT to verified synthetic fixtures");
+        let root = Path::new(&root);
+        for circuit in ["escrow", "withdrawal"] {
+            let reference = root.join("reference").join(circuit);
+            let requests = root.join("requests").join(circuit).join("1");
+            let request: Vec<_> = std::fs::read_dir(requests)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(request.len(), 1, "one pinned synthetic request");
+            let (key, scalars) = load(
+                reference.join("circuit.xbc").to_str().unwrap(),
+                reference.join("test-key.bin").to_str().unwrap(),
+                &request[0],
+            );
+            let scalars = Zeroizing::new(scalars);
+            let expected = G1Projective::msm_bigint(&key.b_g1_query, &scalars);
+            let _ = msm::access_audit::take();
+            let actual = msm::msm::<G1Projective>(&key.b_g1_query, &scalars);
+            let counts = msm::access_audit::take();
+            assert_eq!(actual, expected);
+            assert_eq!(
+                counts.window_base_reads,
+                counts.affine_adds + counts.projective_updates
+            );
+            assert_eq!(
+                counts.spill_adds,
+                counts.full_queue_spill_adds + counts.finish_spill_adds
+            );
+            eprintln!("pinned B1 {circuit}: {counts:?}");
+            #[cfg(feature = "msm-g1-spill-threshold-audit")]
+            {
+                msm::set_bench_g1_later_spill(true);
+                let later = msm::msm::<G1Projective>(&key.b_g1_query, &scalars);
+                let later_counts = msm::access_audit::take();
+                msm::set_bench_g1_later_spill(false);
+                assert_eq!(later, expected);
+                assert_eq!(later_counts.gather_reads, counts.gather_reads);
+                assert_eq!(later_counts.window_base_reads, counts.window_base_reads);
+                assert_eq!(later_counts.affine_adds, counts.affine_adds);
+                assert!(later_counts.g1_threshold_checks > 0);
+                assert_eq!(
+                    later_counts.spill_adds,
+                    later_counts.full_queue_spill_adds + later_counts.finish_spill_adds
+                );
+                eprintln!("pinned B1 {circuit} later spill: {later_counts:?}");
+            }
+        }
+    }
+
     #[test]
     fn counts_check_the_number_of_measured_iterations() {
         let parse =
