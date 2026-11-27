@@ -767,6 +767,52 @@ mod tests {
                 }
             }
         }
+
+        // Explicit local-only extension. The fixture is synthetic and the test
+        // target is never part of a production prover binary. The caller must
+        // verify its manifest before setting this environment variable.
+        if let Ok(root) = std::env::var("XARK_SYNTHETIC_FIXTURE_ROOT") {
+            let root = Path::new(&root);
+            for circuit in ["escrow", "withdrawal"] {
+                let reference = root.join("reference").join(circuit);
+                let requests = root.join("requests").join(circuit).join("1");
+                let request: Vec<_> = std::fs::read_dir(requests)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect();
+                assert_eq!(request.len(), 1, "one pinned synthetic request");
+                let (key, scalars) = super::super::load(
+                    reference.join("circuit.xbc").to_str().unwrap(),
+                    reference.join("test-key.bin").to_str().unwrap(),
+                    &request[0],
+                );
+                let scalars = Zeroizing::new(scalars);
+                let bases = &key.b_g2_query;
+                let cache = CachedImages::new(bases).unwrap();
+                let recoded = cache.recode::<true>(&Recoder::new(), &scalars);
+                let expected = G2Projective::msm_bigint(bases, &scalars);
+                assert_eq!(msm::msm::<G2Projective>(bases, &scalars), expected);
+                assert_eq!(msm::msm::<G2Projective>(&cache.points, &recoded), expected);
+                let visible = Zeroizing::new(
+                    bases
+                        .iter()
+                        .zip(scalars.iter())
+                        .map(|(point, scalar)| {
+                            if point.is_zero() {
+                                Scalar::default()
+                            } else {
+                                *scalar
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                eprintln!(
+                    "pinned synthetic fixture {circuit}: ordinary={:?} cached_gls={:?}",
+                    shape(&visible),
+                    shape(&recoded)
+                );
+            }
+        }
     }
 
     #[cfg(feature = "msm-g2-shifted-bench")]
