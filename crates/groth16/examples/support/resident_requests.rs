@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use ark_serialize::Valid;
 use rayon::prelude::*;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -94,6 +95,12 @@ pub(super) fn run(args: &[String]) {
             .expect("prepare immutable witness and row programs")
     });
     let key = xark_backend::Groth16Keys::read_proving_key(Path::new(key)).expect("load key");
+    let key_validation_start = Instant::now();
+    key.check().expect("validate proving-key points");
+    eprintln!(
+        "proving key validation: complete duration_ns={}",
+        key_validation_start.elapsed().as_nanos()
+    );
     assert_eq!(key.vk.gamma_abc_g1.len(), 2, "expected one public input");
     assert_eq!(
         source.layout().num_instance(),

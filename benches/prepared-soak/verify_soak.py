@@ -17,10 +17,14 @@ def require(condition: bool, message: str) -> None:
 
 
 def rows(pattern: str, data: str) -> list[tuple[int, ...]]:
-    return [tuple(map(int, match)) for match in re.findall(pattern, data, re.MULTILINE)]
+    matches = re.findall(pattern, data, re.MULTILINE)
+    return [
+        tuple(map(int, (match,) if isinstance(match, str) else match))
+        for match in matches
+    ]
 
 
-def verify(root: Path, circuit: str) -> dict[str, int | str]:
+def verify(root: Path, circuit: str) -> dict[str, int | str | bool | None]:
     metadata = json.loads((root / f"{circuit}-process.json").read_text())
     stdout = (root / f"{circuit}.stdout").read_text()
     stderr = (root / f"{circuit}.stderr").read_text()
@@ -88,9 +92,22 @@ def verify(root: Path, circuit: str) -> dict[str, int | str]:
     )
     require("prepared stream solver: 1" in stderr, "prepared solver was not active")
     require("shared B scalars: 0" in stderr, "unexpected shared B scalar mode")
+    validated_key = metadata.get("proving_key_validated", False)
+    key_validation = rows(
+        r"^proving key validation: complete duration_ns=(\d+)$", stderr
+    )
+    if validated_key:
+        require(
+            len(key_validation) == 1 and key_validation[0][0] > 0,
+            "full key validation receipt missing",
+        )
+    else:
+        require(not key_validation, "key validation marker conflicts with metadata")
     live = [value for _, value, _ in memory]
     return {
         "circuit": circuit,
+        "proving_key_validated": validated_key,
+        "key_validation_ns": key_validation[0][0] if validated_key else None,
         "verified_proofs": count,
         "verified_waves": len(waves),
         "live_heap_first_bytes": live[0],

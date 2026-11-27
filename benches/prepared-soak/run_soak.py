@@ -126,6 +126,7 @@ def main() -> None:
         * (1024 if platform.system() == "Linux" else 1),
         "binary_sha256": binary_sha256,
         "fixture_manifest_sha256": manifest_sha256,
+        "proving_key_validated": True,
         "host_os": platform.system(),
         "host_arch": platform.machine(),
     }

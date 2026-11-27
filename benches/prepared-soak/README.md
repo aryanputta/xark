@@ -4,8 +4,12 @@
 prepared solver, CPU MSM, two Rayon workers by default, and a pinned synthetic
 fixture set. It records process exit status, binary and fixture hashes, raw
 verification receipts, tracked Rust heap after each request wave, and peak
-process RSS. `verify_soak.py` checks that all requested proofs and memory waves
-have receipts and that altered and cross-request statements were rejected.
+process RSS. The benchmark validates all decoded proving-key points before
+proving and records the validation duration separately; this cost is part of
+setup, outside each warm request interval.
+`verify_soak.py` checks that all requested proofs and memory waves have receipts,
+that altered and cross-request statements were rejected, and that the complete
+key-validation marker is present for new runs.
 
 Build from this branch with the locked dependency set:
 
@@ -43,7 +47,9 @@ validate every proving-key point in the benchmark loader, measure actual
 freed-memory erasure, or establish confidentiality against co-resident users.
 The fixture and receipt gates use explicit errors, including under Python
 optimized mode (`python3 -O`); a tampered receipt and an overwrite were rejected
-in that mode.
+in that mode. Archived runs made before the full key check are reported with
+`proving_key_validated: false`; their proof-verification and memory evidence
+remains useful, but the new validator does not relabel them as key-validated.
 
 Do not use this soak's service timings as a performance comparison. For a speed
 claim, run balanced baseline and candidate proofs with equivalent verification
