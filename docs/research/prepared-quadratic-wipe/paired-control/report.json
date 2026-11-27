@@ -1,0 +1,264 @@
+{
+  "status": "diagnostic_only_host_not_qualified",
+  "baseline_binary_sha256": "f90cce93ddd2d13e09da5347388c36d3b937cecb9600dac5b80437eead43b4c5",
+  "candidate_binary_sha256": "f6222e24b6ccef7a625d5210fcb9f397b5b29a95570d142755bd928de11e83c3",
+  "fixture_manifest_sha256": "0436bedbae33912331d7306b9c1406956be5695d43f85f5c750f19bbb9bcce41",
+  "blocks": [
+    {
+      "circuit": "escrow",
+      "block": 1,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "baseline": {
+        "setup_ms": 271.891,
+        "prove_ms": [
+          122.287,
+          93.596,
+          87.986,
+          82.989
+        ],
+        "median_prove_ms": 90.791,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      },
+      "candidate": {
+        "setup_ms": 269.159,
+        "prove_ms": [
+          112.181,
+          91.089,
+          99.303,
+          97.737
+        ],
+        "median_prove_ms": 98.52,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      }
+    },
+    {
+      "circuit": "escrow",
+      "block": 2,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "candidate": {
+        "setup_ms": 274.649,
+        "prove_ms": [
+          116.958,
+          85.285,
+          85.305,
+          88.804
+        ],
+        "median_prove_ms": 87.0545,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      },
+      "baseline": {
+        "setup_ms": 269.503,
+        "prove_ms": [
+          118.453,
+          87.938,
+          87.094,
+          84.464
+        ],
+        "median_prove_ms": 87.51599999999999,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      }
+    },
+    {
+      "circuit": "escrow",
+      "block": 3,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "baseline": {
+        "setup_ms": 276.488,
+        "prove_ms": [
+          121.457,
+          93.416,
+          92.211,
+          105.982
+        ],
+        "median_prove_ms": 99.699,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      },
+      "candidate": {
+        "setup_ms": 273.598,
+        "prove_ms": [
+          116.416,
+          92.78,
+          93.939,
+          90.881
+        ],
+        "median_prove_ms": 93.3595,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      }
+    },
+    {
+      "circuit": "escrow",
+      "block": 4,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "candidate": {
+        "setup_ms": 273.617,
+        "prove_ms": [
+          116.817,
+          89.938,
+          94.875,
+          134.195
+        ],
+        "median_prove_ms": 105.846,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      },
+      "baseline": {
+        "setup_ms": 292.935,
+        "prove_ms": [
+          126.611,
+          95.166,
+          98.182,
+          95.322
+        ],
+        "median_prove_ms": 96.75200000000001,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      }
+    },
+    {
+      "circuit": "withdrawal",
+      "block": 1,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "baseline": {
+        "setup_ms": 203.567,
+        "prove_ms": [
+          99.378,
+          83.006,
+          80.507,
+          79.707
+        ],
+        "median_prove_ms": 81.7565,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      },
+      "candidate": {
+        "setup_ms": 226.266,
+        "prove_ms": [
+          104.515,
+          91.83,
+          92.326,
+          95.416
+        ],
+        "median_prove_ms": 93.871,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      }
+    },
+    {
+      "circuit": "withdrawal",
+      "block": 2,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "candidate": {
+        "setup_ms": 222.282,
+        "prove_ms": [
+          112.184,
+          95.016,
+          87.735,
+          90.821
+        ],
+        "median_prove_ms": 92.9185,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      },
+      "baseline": {
+        "setup_ms": 231.785,
+        "prove_ms": [
+          106.35,
+          89.919,
+          88.817,
+          92.335
+        ],
+        "median_prove_ms": 91.127,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      }
+    },
+    {
+      "circuit": "withdrawal",
+      "block": 3,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "baseline": {
+        "setup_ms": 226.512,
+        "prove_ms": [
+          106.75,
+          93.338,
+          85.724,
+          85.299
+        ],
+        "median_prove_ms": 89.531,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      },
+      "candidate": {
+        "setup_ms": 214.354,
+        "prove_ms": [
+          111.173,
+          89.292,
+          89.784,
+          86.275
+        ],
+        "median_prove_ms": 89.53800000000001,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      }
+    },
+    {
+      "circuit": "withdrawal",
+      "block": 4,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "candidate": {
+        "setup_ms": 212.853,
+        "prove_ms": [
+          103.54,
+          86.64,
+          94.632,
+          85.834
+        ],
+        "median_prove_ms": 90.636,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      },
+      "baseline": {
+        "setup_ms": 234.044,
+        "prove_ms": [
+          105.82,
+          89.077,
+          85.244,
+          82.623
+        ],
+        "median_prove_ms": 87.1605,
+        "verified_proofs": 4,
+        "altered_rejections": 4
+      }
+    }
+  ]
+}
