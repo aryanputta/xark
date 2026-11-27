@@ -863,6 +863,105 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "msm-access-audit", feature = "msm-g2-spill-threshold-audit"))]
+    #[test]
+    fn pinned_cached_gls_g2_later_spill_matches_reference_and_counts() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                msm::set_bench_g2_later_spill(false);
+            }
+        }
+        let _reset = Reset;
+        let root = std::env::var("XARK_SYNTHETIC_FIXTURE_ROOT")
+            .expect("set XARK_SYNTHETIC_FIXTURE_ROOT to the verified synthetic fixtures");
+        for circuit in ["escrow", "withdrawal"] {
+            let root = Path::new(&root);
+            let reference = root.join("reference").join(circuit);
+            let requests = root.join("requests").join(circuit).join("1");
+            let request: Vec<_> = std::fs::read_dir(requests)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(request.len(), 1);
+            let (key, scalars) = super::super::load(
+                reference.join("circuit.xbc").to_str().unwrap(),
+                reference.join("test-key.bin").to_str().unwrap(),
+                &request[0],
+            );
+            let scalars = Zeroizing::new(scalars);
+            let cache = CachedImages::new(&key.b_g2_query).unwrap();
+            let recoded = cache.recode::<true>(&Recoder::new(), &scalars);
+            let expected = G2Projective::msm_bigint(&key.b_g2_query, &scalars);
+            for (label, enabled) in [("baseline", false), ("later-spill", true)] {
+                msm::set_bench_g2_later_spill(enabled);
+                let _ = msm::access_audit::take();
+                let point = msm::msm::<G2Projective>(&cache.points, &recoded);
+                let counts = msm::access_audit::take();
+                assert!(msm::same_point(&point, &expected));
+                eprintln!("pinned {circuit} cached GLS {label}: {counts:?}");
+            }
+        }
+    }
+
+    #[cfg(feature = "msm-g2-spill-threshold-audit")]
+    #[test]
+    #[ignore]
+    fn screen_pinned_cached_gls_g2_later_spill() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                msm::set_bench_g2_later_spill(false);
+            }
+        }
+        let _reset = Reset;
+        let root = std::env::var("XARK_SYNTHETIC_FIXTURE_ROOT")
+            .expect("set XARK_SYNTHETIC_FIXTURE_ROOT to the verified synthetic fixtures");
+        for circuit in ["escrow", "withdrawal"] {
+            let root = Path::new(&root);
+            let reference = root.join("reference").join(circuit);
+            let requests = root.join("requests").join(circuit).join("1");
+            let request: Vec<_> = std::fs::read_dir(requests)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(request.len(), 1);
+            let (key, scalars) = super::super::load(
+                reference.join("circuit.xbc").to_str().unwrap(),
+                reference.join("test-key.bin").to_str().unwrap(),
+                &request[0],
+            );
+            let scalars = Zeroizing::new(scalars);
+            let cache = CachedImages::new(&key.b_g2_query).unwrap();
+            let recoded = cache.recode::<true>(&Recoder::new(), &scalars);
+            let expected = G2Projective::msm_bigint(&key.b_g2_query, &scalars);
+            for pair in 0..=10 {
+                let candidate_first = pair % 2 == 0;
+                let timed = |candidate| {
+                    msm::set_bench_g2_later_spill(candidate);
+                    let start = Instant::now();
+                    let point =
+                        std::hint::black_box(msm::msm::<G2Projective>(&cache.points, &recoded));
+                    let elapsed = start.elapsed().as_nanos();
+                    assert!(msm::same_point(&point, &expected));
+                    elapsed
+                };
+                let (baseline_ns, candidate_ns) = if candidate_first {
+                    let candidate = timed(true);
+                    (timed(false), candidate)
+                } else {
+                    let baseline = timed(false);
+                    (baseline, timed(true))
+                };
+                if pair > 0 {
+                    eprintln!(
+                        "later-spill screen circuit={circuit} pair={pair} candidate_first={candidate_first} baseline_ns={baseline_ns} candidate_ns={candidate_ns}"
+                    );
+                }
+            }
+        }
+    }
+
     #[cfg(feature = "msm-g2-shifted-bench")]
     #[test]
     #[should_panic(expected = "cached GLS B2 key mismatch")]

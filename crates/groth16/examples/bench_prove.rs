@@ -422,6 +422,21 @@ fn main() {
         TRACK.store(false, Relaxed);
     }
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(feature = "msm-g2-spill-threshold-audit")]
+    {
+        let later_spill = match std::env::var("BENCH_G2_LATER_SPILL").as_deref() {
+            Ok("1") => true,
+            Ok("0") | Err(std::env::VarError::NotPresent) => false,
+            _ => panic!("BENCH_G2_LATER_SPILL must be 0 or 1"),
+        };
+        xark_groth16::msm::set_bench_g2_later_spill(later_spill);
+        eprintln!("bench g2 later spill: {}", u8::from(later_spill));
+    }
+    #[cfg(not(feature = "msm-g2-spill-threshold-audit"))]
+    assert!(
+        std::env::var_os("BENCH_G2_LATER_SPILL").is_none(),
+        "BENCH_G2_LATER_SPILL requires the msm-g2-spill-threshold-audit feature"
+    );
     if args.get(1).is_some_and(|mode| mode == "warm-requests") {
         #[cfg(feature = "msm-g2-shifted-bench")]
         {

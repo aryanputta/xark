@@ -164,6 +164,16 @@ pub static GLV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// Additions per shared inversion.
 const BATCH: usize = 512;
 
+#[cfg(feature = "msm-g2-spill-threshold-audit")]
+static G2_LATER_SPILL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Toggle the experimental G2 post-drain spill threshold for same-binary audits.
+#[cfg(feature = "msm-g2-spill-threshold-audit")]
+#[doc(hidden)]
+pub fn set_bench_g2_later_spill(enabled: bool) {
+    G2_LATER_SPILL.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[cfg(feature = "msm-g2-endpoint-bench")]
 static G2_TRIM_INVERSE_ENDPOINTS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -259,7 +269,17 @@ impl<G: SwCurve> AffineBuckets<G> {
             if self.queue.len() == BATCH {
                 self.flush();
                 self.drain();
-                if self.queue.len() > BATCH / 2 {
+                #[cfg(feature = "msm-g2-spill-threshold-audit")]
+                let mut spill_threshold = BATCH / 2;
+                #[cfg(feature = "msm-g2-spill-threshold-audit")]
+                if G::BaseField::extension_degree() == 2
+                    && G2_LATER_SPILL.load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    spill_threshold = 3 * BATCH / 4;
+                }
+                #[cfg(not(feature = "msm-g2-spill-threshold-audit"))]
+                let spill_threshold = BATCH / 2;
+                if self.queue.len() > spill_threshold {
                     self.spill();
                 }
             }
