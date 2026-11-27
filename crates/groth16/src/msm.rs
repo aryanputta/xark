@@ -40,6 +40,10 @@ mod stage_profile {
         pub gather_ns: AtomicU64,
         pub fill_ns: AtomicU64,
         pub flush_ns: AtomicU64,
+        pub denominator_prefix_ns: AtomicU64,
+        pub inversion_ns: AtomicU64,
+        pub reverse_chain_ns: AtomicU64,
+        pub point_update_ns: AtomicU64,
         pub reduce_ns: AtomicU64,
         pub merge_ns: AtomicU64,
         pub msm_ns: AtomicU64,
@@ -91,7 +95,7 @@ mod stage_profile {
         drop(reset);
         let get = |slot: &AtomicU64| slot.load(Ordering::Relaxed);
         println!(
-            "{{\"kind\":\"msm_stage\",\"request\":{request},\"task\":\"{label}\",\"terms\":{terms},\"rayon_threads\":{},\"task_start_ns\":{task_start_ns},\"task_end_ns\":{task_end_ns},\"task_wall_ns\":{task_wall_ns},\"msm_call_sum_ns\":{},\"classify_ns\":{},\"unit_ns\":{},\"glv_ns\":{},\"recode_ns\":{},\"gather_ns\":{},\"fill_task_sum_ns\":{},\"flush_nested_ns\":{},\"reduce_task_sum_ns\":{},\"merge_ns\":{},\"msm_calls\":{},\"window_tasks\":{},\"nonempty_flushes\":{},\"overlapping_task_sums\":true}}",
+            "{{\"kind\":\"msm_stage\",\"request\":{request},\"task\":\"{label}\",\"terms\":{terms},\"rayon_threads\":{},\"task_start_ns\":{task_start_ns},\"task_end_ns\":{task_end_ns},\"task_wall_ns\":{task_wall_ns},\"msm_call_sum_ns\":{},\"classify_ns\":{},\"unit_ns\":{},\"glv_ns\":{},\"recode_ns\":{},\"gather_ns\":{},\"fill_task_sum_ns\":{},\"flush_nested_ns\":{},\"denominator_prefix_ns\":{},\"single_inversion_ns\":{},\"reverse_chain_ns\":{},\"point_update_ns\":{},\"reduce_task_sum_ns\":{},\"merge_ns\":{},\"msm_calls\":{},\"window_tasks\":{},\"nonempty_flushes\":{},\"overlapping_task_sums\":true}}",
             rayon::current_num_threads(),
             get(&counters.msm_ns),
             get(&counters.classify_ns),
@@ -101,6 +105,10 @@ mod stage_profile {
             get(&counters.gather_ns),
             get(&counters.fill_ns),
             get(&counters.flush_ns),
+            get(&counters.denominator_prefix_ns),
+            get(&counters.inversion_ns),
+            get(&counters.reverse_chain_ns),
+            get(&counters.point_update_ns),
             get(&counters.reduce_ns),
             get(&counters.merge_ns),
             get(&counters.msm_calls),
@@ -389,6 +397,8 @@ impl<G: SwCurve> AffineBuckets<G> {
     fn invert_and_update<const TRIM: bool>(&mut self) {
         use crate::limbs::FastSub;
         use ark_ff::AdditiveGroup;
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let denominator_start = self.profile.as_ref().map(|_| std::time::Instant::now());
         self.den.clear();
         self.pre.clear();
         let denominator = |b: u32, px: G::BaseField, py: G::BaseField| {
@@ -416,15 +426,58 @@ impl<G: SwCurve> AffineBuckets<G> {
             self.den.push(d);
             acc *= d;
         }
+        #[cfg(feature = "msm-stage-profile-bench")]
+        if let (Some(profile), Some(start)) = (&self.profile, denominator_start) {
+            stage_profile::add(&profile.denominator_prefix_ns, start);
+        }
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let inversion_start = self.profile.as_ref().map(|_| std::time::Instant::now());
         let mut inv = acc.inverse().expect("nonzero batch denominator");
+        #[cfg(feature = "msm-stage-profile-bench")]
+        if let (Some(profile), Some(start)) = (&self.profile, inversion_start) {
+            stage_profile::add(&profile.inversion_ns, start);
+        }
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let enabled = self.profile.is_some();
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let mut reverse_chain_ns = 0;
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let mut point_update_ns = 0;
         for i in (0..self.den.len()).rev() {
+            #[cfg(feature = "msm-stage-profile-bench")]
+            let chain_start = enabled.then(std::time::Instant::now);
             let inv_i = inv * self.pre[i];
             inv *= self.den[i];
+            #[cfg(feature = "msm-stage-profile-bench")]
+            if let Some(start) = chain_start {
+                reverse_chain_ns += start.elapsed().as_nanos() as u64;
+            }
+            #[cfg(feature = "msm-stage-profile-bench")]
+            let update_start = enabled.then(std::time::Instant::now);
             self.apply_inverse(i + first, inv_i);
+            #[cfg(feature = "msm-stage-profile-bench")]
+            if let Some(start) = update_start {
+                point_update_ns += start.elapsed().as_nanos() as u64;
+            }
         }
         if TRIM {
             // The reverse sweep has multiplied out every factor except d₀.
+            #[cfg(feature = "msm-stage-profile-bench")]
+            let update_start = enabled.then(std::time::Instant::now);
             self.apply_inverse(0, inv);
+            #[cfg(feature = "msm-stage-profile-bench")]
+            if let Some(start) = update_start {
+                point_update_ns += start.elapsed().as_nanos() as u64;
+            }
+        }
+        #[cfg(feature = "msm-stage-profile-bench")]
+        if let Some(profile) = &self.profile {
+            profile
+                .reverse_chain_ns
+                .fetch_add(reverse_chain_ns, std::sync::atomic::Ordering::Relaxed);
+            profile
+                .point_update_ns
+                .fetch_add(point_update_ns, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
