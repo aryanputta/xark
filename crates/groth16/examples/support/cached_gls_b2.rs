@@ -566,6 +566,35 @@ mod tests {
     }
 
     #[test]
+    fn gls_split_branch_matches_upstream_full_width_class_for_canonical_scalars() {
+        // The upstream MSM classifies by min(s, r-s) bit length. Its last class
+        // begins at 2^128. This guards against revealing a new coarse scalar
+        // class through the GLS split branch; bucket traces remain a separate
+        // witness-dependent access pattern.
+        let recoder = Recoder::new();
+        let threshold = BigInt::from(1u8) << 128;
+        let mut rng = ChaCha20Rng::seed_from_u64(25405);
+        let mut values = vec![
+            Scalar::default(),
+            ArkBigInt([1, 0, 0, 0]),
+            ArkBigInt([u64::MAX, u64::MAX, 0, 0]),
+            ArkBigInt([0, 0, 1, 0]),
+            ArkBigInt([1, 0, 1, 0]),
+        ];
+        for small in values[1..].to_vec() {
+            let mut negative = Fr::MODULUS;
+            negative.sub_with_borrow(&small);
+            values.push(negative);
+        }
+        values.extend((0..2048).map(|_| Fr::rand(&mut rng).into_bigint()));
+        for scalar in values {
+            let canonical = BigInt::from_bytes_le(Sign::Plus, &scalar.to_bytes_le());
+            let magnitude = std::cmp::min(canonical.clone(), &recoder.modulus - canonical);
+            assert_eq!(requires_split(&scalar), magnitude >= threshold);
+        }
+    }
+
+    #[test]
     fn cached_images_and_msm_agree_with_arkworks() {
         let generator = G2Projective::generator();
         let q = Fr::from_le_bytes_mod_order(&Fq::MODULUS.to_bytes_le());
