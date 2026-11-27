@@ -197,6 +197,10 @@ pub(super) fn run(args: &[String]) {
         }
     }
     eprintln!("prepared stream solver: {}", u8::from(prepare_solver));
+    eprintln!(
+        "prepared satisfaction-only: {}",
+        u8::from(prepare_solver && std::env::var_os("BENCH_SAT_ONLY").is_some())
+    );
     if memory_run {
         eprintln!(
             "setup_live_heap_bytes={} request_peak_heap_bytes={}",
