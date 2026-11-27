@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 
+use ark_bn254::Fr;
 use xark_ir::function_decode::{
     PreparedStreamSolver, expand_function_blob, expand_function_blob_reduced, stream_solve_verify,
 };
@@ -62,6 +63,59 @@ fn prepared_solver_matches_full_stream_checks_after_a_rejected_request() {
     assert_eq!(report(actual.1), report(expected.1));
     assert_eq!(solver.solve_verify(&valid).unwrap().0, expected.0);
     assert!(PreparedStreamSolver::new(&XBC[..6]).is_err());
+}
+
+#[test]
+fn typed_field_inputs_match_decimal_solver_and_reject_invalid_statements() {
+    let solver = PreparedStreamSolver::new(XBC).unwrap();
+    let decimal = inputs(HASH);
+    let fields: BTreeMap<u32, Fr> = decimal
+        .iter()
+        .map(|(&id, value)| (id, value.parse().unwrap()))
+        .collect();
+    let expected = solver.solve_verify(&decimal).unwrap();
+    let actual = solver.solve_verify_fields(&fields).unwrap();
+    let dense = solver.solve_verify_dense_fields(&fields).unwrap();
+    assert_eq!(actual.0, expected.0);
+    for (&id, value) in &expected.0 {
+        assert_eq!(dense.0[id as usize], value.as_bn254_fr());
+    }
+    let report = |rows: Vec<xark_ir::solver::UnderConstrained>| {
+        rows.into_iter()
+            .map(|row| (row.var, row.name, row.reason))
+            .collect::<Vec<_>>()
+    };
+    let expected_report = report(expected.1);
+    assert_eq!(report(actual.1), expected_report);
+    assert_eq!(report(dense.1), expected_report);
+
+    let invalid = inputs("12345");
+    let invalid_fields: BTreeMap<u32, Fr> = invalid
+        .iter()
+        .map(|(&id, value)| (id, value.parse().unwrap()))
+        .collect();
+    assert_eq!(
+        solver.solve_verify_fields(&invalid_fields).unwrap_err(),
+        solver.solve_verify(&invalid).unwrap_err()
+    );
+    assert_eq!(
+        solver
+            .solve_verify_dense_fields(&invalid_fields)
+            .unwrap_err(),
+        solver.solve_verify(&invalid).unwrap_err()
+    );
+    let mut missing = fields;
+    missing.remove(&solver.input_vars()[0].id);
+    let mut missing_decimal = decimal;
+    missing_decimal.remove(&solver.input_vars()[0].id);
+    assert_eq!(
+        solver.solve_verify_fields(&missing).unwrap_err(),
+        solver.solve_verify(&missing_decimal).unwrap_err()
+    );
+    assert_eq!(
+        solver.solve_verify_dense_fields(&missing).unwrap_err(),
+        solver.solve_verify(&missing_decimal).unwrap_err()
+    );
 }
 
 #[test]

@@ -1,27 +1,25 @@
 use std::collections::BTreeMap;
 
-use ark_bn254::Bn254;
-use ark_ff::PrimeField;
+use ark_bn254::{Bn254, Fr};
 use ark_serialize::{CanonicalSerialize, Valid};
 use xark_groth16::{ConstraintSource, InMemoryPk, ProverConfig, ProvingKey, VerifyingKey};
 use xark_ir::function_decode::PreparedStreamSolver;
 use xark_ir::primitive::VarRole;
-use xark_ir::solver::Fp;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{CircuitProof, ProveError, ProveInputs, owned_rows_for_key};
 
-// The solver borrows decimal strings. Wipe them on return and unwinding.
+// The solver borrows field inputs. Wipe them on return and unwinding.
 #[derive(Default)]
-struct RequestDecimals(BTreeMap<u32, String>);
+struct RequestFields(BTreeMap<u32, Fr>);
 
-impl RequestDecimals {
+impl RequestFields {
     fn wipe(&mut self) {
         self.0.values_mut().for_each(Zeroize::zeroize);
     }
 }
 
-impl Drop for RequestDecimals {
+impl Drop for RequestFields {
     fn drop(&mut self) {
         self.wipe();
     }
@@ -99,7 +97,7 @@ impl PreparedCpuProver {
     /// Solve, prove and self-check a fresh request. The proof and public inputs
     /// use the same canonical encodings as [`crate::Circuit::prove`].
     pub fn prove(&self, inputs: impl ProveInputs) -> Result<CircuitProof, ProveError> {
-        let mut decimal = RequestDecimals::default();
+        let mut fields = RequestFields::default();
         let solved = (|| {
             let values = Zeroizing::new(inputs.into_inputs());
             for (name, value) in values.iter() {
@@ -107,27 +105,25 @@ impl PreparedCpuProver {
                     .inputs
                     .get(name)
                     .ok_or_else(|| ProveError("unknown circuit input".into()))?;
-                let std::collections::btree_map::Entry::Vacant(entry) = decimal.0.entry(*id) else {
+                let std::collections::btree_map::Entry::Vacant(entry) = fields.0.entry(*id) else {
                     return Err(ProveError("duplicate circuit input".into()));
                 };
-                entry.insert(value.into_bigint().to_string());
+                entry.insert(*value);
             }
             drop(values);
-            if decimal.0.len() != self.inputs.len() {
+            if fields.0.len() != self.inputs.len() {
                 return Err(ProveError("missing circuit input".into()));
             }
-            self.solver.solve_verify(&decimal.0).map_err(ProveError)
+            self.solver
+                .solve_verify_dense_fields(&fields.0)
+                .map_err(ProveError)
         })();
-        drop(decimal);
-        let (mut assignment, _) = solved?;
+        drop(fields);
+        let (assignment, _) = solved?;
         let layout = self.rows.layout();
         let witness =
-            Zeroizing::new(layout.assignment(|id| assignment.get(&id).and_then(Fp::as_bn254_fr)));
-        for value in assignment.values_mut() {
-            if let Fp::Bn254(scalar) = value {
-                scalar.zeroize();
-            }
-        }
+            Zeroizing::new(layout.assignment(|id| assignment.get(id as usize).copied().flatten()));
+        drop(assignment);
         let proof = xark_groth16::prove(
             &*self.rows,
             &witness,
@@ -152,15 +148,17 @@ impl PreparedCpuProver {
 
 #[cfg(test)]
 mod tests {
-    use super::RequestDecimals;
+    use ark_bn254::Fr;
+
+    use super::RequestFields;
 
     #[test]
-    fn request_decimal_values_are_cleared_in_place() {
-        let mut values = RequestDecimals::default();
-        values.0.insert(1, "12345678901234567890".into());
-        values.0.insert(2, "98765432109876543210".into());
+    fn request_field_values_are_cleared_in_place() {
+        let mut values = RequestFields::default();
+        values.0.insert(1, Fr::from(123456789u64));
+        values.0.insert(2, Fr::from(987654321u64));
         values.wipe();
         assert_eq!(values.0.len(), 2);
-        assert!(values.0.values().all(String::is_empty));
+        assert!(values.0.values().all(|value| *value == Fr::from(0u64)));
     }
 }

@@ -1674,6 +1674,9 @@ pub struct PreparedStreamSolver {
     rows: eval::Compiled,
 }
 
+/// Request-local BN254 witness slots, cleared when the guard is dropped.
+pub type DenseBn254Witness = zeroize::Zeroizing<Vec<Option<ark_bn254::Fr>>>;
+
 impl PreparedStreamSolver {
     /// Decode and compile a trusted circuit artifact before admitting requests.
     pub fn new(bytes: &[u8]) -> Result<Self, String> {
@@ -1727,7 +1730,7 @@ impl PreparedStreamSolver {
         ),
         String,
     > {
-        let mut assign = eval::solve_witness(
+        let assign = eval::solve_witness(
             eval::WitnessProgram::Compiled(&self.witness),
             self.input_vars(),
             self.num_vars,
@@ -1736,6 +1739,77 @@ impl PreparedStreamSolver {
         )
         .map(bn254_witness_slots)
         .map_err(|e| format!("solve: {e:?}"))?;
+        self.check_assignment(assign)
+            .map(|(assign, report)| (crate::solver::slots_into_map(assign), report))
+    }
+
+    /// Solve typed BN254 inputs without converting them to decimal and parsing
+    /// them back. Constraint and under-constraint checks are identical.
+    pub fn solve_verify_fields(
+        &self,
+        inputs: &BTreeMap<u32, ark_bn254::Fr>,
+    ) -> Result<
+        (
+            BTreeMap<u32, crate::solver::Fp>,
+            Vec<crate::solver::UnderConstrained>,
+        ),
+        String,
+    > {
+        let assign = eval::solve_witness_fields(
+            eval::WitnessProgram::Compiled(&self.witness),
+            self.input_vars(),
+            self.num_vars,
+            &self.modulus,
+            inputs,
+        )
+        .map(bn254_witness_slots)
+        .map_err(|e| format!("solve: {e:?}"))?;
+        self.check_assignment(assign)
+            .map(|(assign, report)| (crate::solver::slots_into_map(assign), report))
+    }
+
+    /// Solve typed inputs and retain witness values by IR variable id. This
+    /// avoids constructing a tree map when a prover needs a dense assignment.
+    /// The returned guard wipes the request-local slots when dropped.
+    pub fn solve_verify_dense_fields(
+        &self,
+        inputs: &BTreeMap<u32, ark_bn254::Fr>,
+    ) -> Result<(DenseBn254Witness, Vec<crate::solver::UnderConstrained>), String> {
+        let assign = eval::solve_witness_fields(
+            eval::WitnessProgram::Compiled(&self.witness),
+            self.input_vars(),
+            self.num_vars,
+            &self.modulus,
+            inputs,
+        )
+        .map(bn254_witness_slots)
+        .map_err(|e| format!("solve: {e:?}"))?;
+        let (mut assign, report) = self.check_assignment(assign)?;
+        let mut fields = zeroize::Zeroizing::new(Vec::with_capacity(assign.len()));
+        fields.extend(
+            assign
+                .iter()
+                .map(|value| value.as_ref().and_then(|value| value.as_bn254_fr())),
+        );
+        use zeroize::Zeroize;
+        for value in assign.iter_mut().flatten() {
+            if let crate::solver::Fp::Bn254(scalar) = value {
+                scalar.zeroize();
+            }
+        }
+        Ok((fields, report))
+    }
+
+    fn check_assignment(
+        &self,
+        mut assign: Vec<Option<crate::solver::Fp>>,
+    ) -> Result<
+        (
+            Vec<Option<crate::solver::Fp>>,
+            Vec<crate::solver::UnderConstrained>,
+        ),
+        String,
+    > {
         let program = RowProgram::Compiled(&self.rows);
         let (flags, sat_ok, mut quadratic) =
             classify_and_check(program, &assign, &self.modulus, self.num_vars, true);
@@ -1767,7 +1841,7 @@ impl PreparedStreamSolver {
             two_valued_satisfied(program, &assign, &self.modulus, &suspects, &quadratic)
         };
         let out = assemble_underconstrained(&flags, derived(), &self.keep_extra, &two_valued);
-        Ok((crate::solver::slots_into_map(assign), out))
+        Ok((assign, out))
     }
 }
 
@@ -3358,17 +3432,40 @@ mod eval {
         modulus: &BigUint,
         inputs: &BTreeMap<u32, String>,
     ) -> Result<Witness, SolveError> {
+        solve_witness_with_input(program, vars, n, modulus, |id| {
+            let decimal = inputs.get(&id).ok_or(SolveError::MissingInput(id))?;
+            Ok(Fp::from_decimal(decimal, modulus)
+                .as_bn254_fr()
+                .expect("BN254 modulus"))
+        })
+    }
+
+    pub(super) fn solve_witness_fields(
+        program: WitnessProgram<'_>,
+        vars: &[Var],
+        n: usize,
+        modulus: &BigUint,
+        inputs: &BTreeMap<u32, Fr>,
+    ) -> Result<Witness, SolveError> {
+        solve_witness_with_input(program, vars, n, modulus, |id| {
+            inputs.get(&id).copied().ok_or(SolveError::MissingInput(id))
+        })
+    }
+
+    fn solve_witness_with_input(
+        program: WitnessProgram<'_>,
+        vars: &[Var],
+        n: usize,
+        modulus: &BigUint,
+        mut input: impl FnMut(u32) -> Result<Fr, SolveError>,
+    ) -> Result<Witness, SolveError> {
         let mut w = Witness {
             vals: vec![Fr::zero(); n],
             set: vec![false; n],
         };
         for var in vars {
             if matches!(var.role, VarRole::PublicInput | VarRole::PrivateInput) {
-                let decimal = inputs
-                    .get(&var.id)
-                    .ok_or(SolveError::MissingInput(var.id))?;
-                let v = Fp::from_decimal(decimal, modulus);
-                w.put(var.id, v.as_bn254_fr().expect("BN254 modulus"));
+                w.put(var.id, input(var.id)?);
             }
         }
         let owned;
