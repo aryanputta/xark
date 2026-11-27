@@ -2797,6 +2797,43 @@ mod eval {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn row_layout_stats(c: &Compiled) -> [usize; 6] {
+        let mut stats = [0usize; 6]; // rows, top rows, terms, <=1 term, sorted, calls
+        for (is_top, items) in c
+            .top
+            .iter()
+            .map(|items| (true, items))
+            .chain(c.defs.iter().map(|items| (false, items)))
+        {
+            for item in items {
+                match item {
+                    Item::Rows(batch) => {
+                        for row in batch {
+                            stats[0] += 1;
+                            stats[1] += usize::from(is_top);
+                            let refs: Vec<_> = row
+                                .iter()
+                                .flat_map(|lc| lc.terms.iter().map(|(r, _)| *r))
+                                .collect();
+                            stats[2] += refs.len();
+                            stats[3] += usize::from(refs.len() <= 1);
+                            let ids: Vec<_> = refs
+                                .iter()
+                                .map(|r| match r {
+                                    VRef::Global(id) | VRef::Internal(id) | VRef::Plug(id) => *id,
+                                })
+                                .collect();
+                            stats[4] += usize::from(ids.windows(2).all(|p| p[0] <= p[1]));
+                        }
+                    }
+                    Item::Call { .. } => stats[5] += 1,
+                }
+            }
+        }
+        stats
+    }
+
     #[inline]
     fn val(r: VRef, f: &Frame, z: &dyn Fn(u32) -> Fr) -> Fr {
         match r {
@@ -3463,6 +3500,20 @@ mod tests {
     /// built through the substitution) give every variable the same flags and the
     /// same satisfaction verdict, on a stream of rows, rolled rows and template calls
     /// whose plugs are expressions.
+    #[test]
+    #[ignore = "requires XARK_LAYOUT_XBC from the private Privacy Rings fixture"]
+    fn prepared_row_layout_census() {
+        let path = std::env::var("XARK_LAYOUT_XBC").expect("XARK_LAYOUT_XBC");
+        let bytes = std::fs::read(path).expect("read XBC");
+        let (_, _, defs, top_c, _, _, _) = decode_compact(&bytes);
+        let compiled = eval::compile(&defs, &top_c);
+        let [rows, top_rows, terms, zero_or_one, already_sorted, calls] =
+            eval::row_layout_stats(&compiled);
+        println!(
+            "layout rows={rows} top_rows={top_rows} terms={terms} zero_or_one={zero_or_one} already_sorted={already_sorted} calls={calls}"
+        );
+    }
+
     #[test]
     fn compiled_classification_matches_generic() {
         use std::sync::atomic::Ordering;
