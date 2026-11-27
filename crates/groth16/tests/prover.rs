@@ -362,6 +362,7 @@ fn split_resident_timing_keeps_the_proof_and_reports_tasks() {
     assert_eq!(
         names,
         [
+            "h_scalar_chunk",
             "msm_a",
             "msm_b1",
             "msm_b2",

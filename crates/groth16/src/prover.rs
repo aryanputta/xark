@@ -689,7 +689,9 @@ where
                     })
                     .map(|h| {
                         time_resident(timings, "msm_h", || {
-                            resident_msm(&key.h_query, chunk, &|off, len| h.chunk(off, len))
+                            resident_msm(&key.h_query, chunk, &|off, len| {
+                                time_resident(timings, "h_scalar_chunk", || h.chunk(off, len))
+                            })
                         })
                     }),
                 );
