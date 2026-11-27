@@ -47,11 +47,12 @@ impl Groth16Keys {
     /// Load the proving key with parallel, unchecked point deserialization:
     /// parse the five point-vector layout and fan per-point work across cores,
     /// loading with `Validate::No` to skip the per-point subgroup scalar-mul.
-    /// Sound because the *proving* key is our own setup output, not untrusted
-    /// input: a malformed key can only yield a proof that fails verification,
-    /// and soundness is enforced on the *verifying* key (loaded fully-validated
-    /// by verifiers). Decompression's on-curve check still runs, so a corrupt
-    /// point is still rejected.
+    /// This fast loader assumes an authenticated key from a trusted setup.
+    /// It does not establish that the decoded key is valid or bound to the
+    /// intended circuit. In particular, compressed points are reconstructed
+    /// on the curve, but unchecked uncompressed points need not be on it.
+    /// Callers accepting key bytes from an untrusted source must authenticate
+    /// the artifact and validate its points before proving with private inputs.
     pub fn read_proving_key(path: &Path) -> std::io::Result<ProvingKey<Bn254>> {
         Self::decode_proving_key(&std::fs::read(path)?)
     }
@@ -75,7 +76,7 @@ impl Groth16Keys {
 /// Parse the `CanonicalSerialize` layout of `ProvingKey<Bn254>` — `vk`,
 /// `beta_g1`, `delta_g1`, then the five point vectors (field order matches
 /// ark-groth16's `ProvingKey`) — deserializing each vector's points in parallel.
-/// Compressed, `Validate::No` (see `read_proving_key`).
+/// Both point modes use `Validate::No` (see `read_proving_key`).
 fn read_proving_key_parallel(
     bytes: &[u8],
     compress: Compress,
@@ -105,8 +106,8 @@ fn read_proving_key_parallel(
 }
 
 /// Read a `Vec<G>` in the arkworks layout — a `u64` length then `len`
-/// fixed-size points — deserializing (decompress + subgroup-check) the points
-/// across rayon's thread pool.
+/// fixed-size points — deserializing the points across rayon's thread pool
+/// under the caller-selected validation mode.
 fn read_point_vec_par<G>(
     cur: &mut &[u8],
     compress: Compress,
@@ -130,6 +131,57 @@ where
         .par_chunks(sz)
         .map(|bytes| G::deserialize_with_mode(bytes, compress, validate))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use ark_bn254::{Fq, Fq2};
+    use ark_ff::{AdditiveGroup, Field};
+    use ark_serialize::Valid;
+
+    use super::*;
+
+    fn key_with_b2(point: G2Affine, compress: Compress) -> Vec<u8> {
+        let key = ProvingKey::<Bn254> {
+            vk: VerifyingKey::default(),
+            beta_g1: G1Affine::default(),
+            delta_g1: G1Affine::default(),
+            a_query: Vec::new(),
+            b_g1_query: Vec::new(),
+            b_g2_query: vec![point],
+            h_query: Vec::new(),
+            l_query: Vec::new(),
+        };
+        let mut bytes = KeyFormat::header(matches!(compress, Compress::Yes), None);
+        key.serialize_with_mode(&mut bytes, compress).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn unchecked_uncompressed_key_must_be_validated_before_private_proving() {
+        let off_curve = G2Affine::new_unchecked(Fq2::ZERO, Fq2::ONE);
+        assert!(!off_curve.is_on_curve());
+        let decoded = Groth16Keys::decode_proving_key(&key_with_b2(off_curve, Compress::No))
+            .expect("the fast loader is explicitly unchecked");
+        assert_eq!(decoded.b_g2_query, vec![off_curve]);
+        assert!(decoded.b_g2_query[0].check().is_err());
+        assert!(decoded.check().is_err());
+    }
+
+    #[test]
+    fn unchecked_compressed_key_does_not_establish_subgroup_membership() {
+        let outsider = (0..64u64)
+            .filter_map(|x| {
+                G2Affine::get_point_from_x_unchecked(Fq2::new(Fq::from(x), Fq::ONE), false)
+            })
+            .find(|point| !point.is_in_correct_subgroup_assuming_on_curve())
+            .unwrap();
+        let decoded = Groth16Keys::decode_proving_key(&key_with_b2(outsider, Compress::Yes))
+            .expect("the fast loader is explicitly unchecked");
+        assert_eq!(decoded.b_g2_query, vec![outsider]);
+        assert!(decoded.b_g2_query[0].check().is_err());
+        assert!(decoded.check().is_err());
+    }
 }
 
 /// Metadata written alongside the keys so the user (and later, audits) can
