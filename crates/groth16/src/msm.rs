@@ -116,6 +116,23 @@ static G2_TRIM_INVERSE_ENDPOINTS: std::sync::atomic::AtomicBool =
 static G2_SPARSE_ENDOMORPHISM: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(feature = "msm-g2-endpoint-bench")]
+static BENCH_AFFINE_DOUBLING_G1: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "msm-g2-endpoint-bench")]
+static BENCH_AFFINE_DOUBLING_G2: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "msm-g2-endpoint-bench")]
+#[doc(hidden)]
+pub fn bench_affine_doubling_counts() -> (u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        BENCH_AFFINE_DOUBLING_G1.load(Relaxed),
+        BENCH_AFFINE_DOUBLING_G2.load(Relaxed),
+    )
+}
+
 /// Toggle endpoint elision in G2 affine batch inversion before benchmarking.
 #[cfg(feature = "msm-g2-endpoint-bench")]
 #[doc(hidden)]
@@ -294,6 +311,15 @@ impl<G: SwCurve> AffineBuckets<G> {
         let lambda = if x1 != px {
             py.fsub(&y1) * inv
         } else if y1 == py && !y1.is_zero() {
+            #[cfg(feature = "msm-g2-endpoint-bench")]
+            {
+                let counter = if G::BaseField::extension_degree() == 2 {
+                    &BENCH_AFFINE_DOUBLING_G2
+                } else {
+                    &BENCH_AFFINE_DOUBLING_G1
+                };
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             (x1.square().double() + x1.square() + G::coeff_a()) * inv
         } else {
             self.used[bi] = false;
@@ -858,6 +884,10 @@ mod tests {
                 }
             }
         }
+        assert!(
+            bench_affine_doubling_counts().1 > 0,
+            "the endpoint test must exercise the counted G2 doubling branch"
+        );
     }
 
     #[cfg(feature = "msm-g2-endpoint-bench")]

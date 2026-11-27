@@ -135,6 +135,12 @@ pub(super) fn run(args: &[String], xark_only: bool) {
     let b1 = measure::<G1Projective>("b1", &pk.b_g1_query, &scalars, samples, warmups);
     let b2 = measure::<G2Projective>("b2", &pk.b_g2_query, &scalars, samples, warmups);
 
+    #[cfg(feature = "msm-g2-endpoint-bench")]
+    {
+        let (g1, g2) = msm::bench_affine_doubling_counts();
+        println!("query msm affine doubling counts: g1={g1} g2={g2}");
+    }
+
     println!(
         "query msm verified: terms={} threads={} samples={samples} warmups={warmups} xark_glv={} xark_batch_affine={}",
         scalars.len(),
