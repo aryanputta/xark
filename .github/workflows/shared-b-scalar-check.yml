@@ -6,6 +6,7 @@ on:
       - perf/request-local-b-scalars
       - integration/shared-b-scratch-wipe
       - integration/prepared-shared-b-secure
+      - fix/bench-msm-secret-metadata
       - perf/g2-public-validation
       - perf/g2-gls-boxed-scratch
       - test/g2-resident-request-batches
