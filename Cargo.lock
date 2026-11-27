@@ -4982,6 +4982,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]
