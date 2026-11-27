@@ -6,6 +6,7 @@ use ark_bn254::{G2Affine, G2Projective};
 use ark_ec::CurveGroup;
 use ark_ff::{AdditiveGroup, BigInt};
 use rayon::prelude::*;
+use zeroize::Zeroizing;
 
 use super::Scalar;
 
@@ -51,7 +52,9 @@ impl<'a> ShiftedBases<'a> {
 
     pub fn msm(&self, scalars: &[Scalar]) -> G2Projective {
         assert_eq!(scalars.len(), self.source.len(), "shifted B2 scalar count");
-        let mut split = Vec::with_capacity(self.points.len());
+        // Both halves encode private request scalars. Guard the allocation before
+        // writing either half so it is wiped on return and during unwinding.
+        let mut split = Zeroizing::new(Vec::with_capacity(self.points.len()));
         split.extend(scalars.iter().map(|s| BigInt([s.0[0], s.0[1], 0, 0])));
         split.extend(scalars.iter().map(|s| BigInt([s.0[2], s.0[3], 0, 0])));
         super::msm::<G2Projective>(&self.points, &split)
