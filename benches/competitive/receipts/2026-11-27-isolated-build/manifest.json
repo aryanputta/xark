@@ -1,0 +1,31 @@
+{
+  "binary": "/private/tmp/xark-competitive-provenance-real-20261127-b/ci/examples/bench_prove",
+  "binary_bytes": 5761064,
+  "binary_sha256": "f02272bed2889c1696c4c0d339406282765aba84277da29c82df8b7fd41edfd0",
+  "build_stderr_sha256": "93e8cebb11a9afc153eae2a3af1deda950327526e2be85b0d3eaff48dcc76f9d",
+  "build_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "built_at_utc": "2026-11-27T02:42:30.550115+00:00",
+  "cargo": "cargo 1.94.1 (Homebrew)",
+  "cargo_encoded_rustflags": null,
+  "cargo_lock_sha256": "851637cbc3f13c6976dbbc5bcc126d380b0757e2ede3eb1f774c30c68e36f51d",
+  "command": [
+    "cargo",
+    "build",
+    "--offline",
+    "--locked",
+    "--profile",
+    "ci",
+    "-p",
+    "xark-groth16",
+    "--example",
+    "bench_prove"
+  ],
+  "features": "",
+  "profile": "ci",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25) (Homebrew)\nbinary: rustc\ncommit-hash: e408947bfd200af42db322daf0fadfe7e26d3bd1\ncommit-date: 2026-03-25\nhost: x86_64-apple-darwin\nrelease: 1.94.1\nLLVM version: 21.1.8",
+  "rustflags": null,
+  "source": "/Users/srini/worktrees/xark-prepared-quadratic-wipe",
+  "source_commit": "7cd0e9076dd1e59267c1a25c16462b5dec4b774e",
+  "target_dir": "/private/tmp/xark-competitive-provenance-real-20261127-b",
+  "version": 1
+}

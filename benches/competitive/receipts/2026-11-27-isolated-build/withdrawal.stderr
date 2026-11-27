@@ -1,0 +1,4 @@
+resident CPU: a_query_len=5406 merge_below=4096 merged=false
+resident includes row checks: false
+warm proofs verified by Arkworks and Xark: arkworks warmups=1 measured=2
+warm proofs verified by Arkworks and Xark: xark-groth16 warmups=1 measured=2
