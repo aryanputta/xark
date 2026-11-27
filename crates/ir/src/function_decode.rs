@@ -1716,6 +1716,55 @@ impl PreparedStreamSolver {
         &self.inputs
     }
 
+    /// Solve a request and check every compiled row. Circuit under-constraint
+    /// analysis remains available through `solve_verify` for circuit audits;
+    /// proof generation requires satisfaction of the fixed circuit relation.
+    pub fn solve_satisfied(
+        &self,
+        inputs: &BTreeMap<u32, String>,
+    ) -> Result<BTreeMap<u32, crate::solver::Fp>, String> {
+        use rayon::prelude::*;
+        use zeroize::Zeroize;
+
+        let mut assign = eval::solve_witness(
+            eval::WitnessProgram::Compiled(&self.witness),
+            self.input_vars(),
+            self.num_vars,
+            &self.modulus,
+            inputs,
+        )
+        .map(bn254_witness_slots)
+        .map_err(|e| format!("solve: {e:?}"))?;
+        let sat_ok = {
+            let z = bn254_values(&assign);
+            self.rows
+                .top
+                .par_iter()
+                .map(|item| {
+                    let mut ok = true;
+                    eval::eval(
+                        &self.rows,
+                        item,
+                        &eval::TOP,
+                        &z,
+                        [true; 3],
+                        &mut |[a, b, c]| ok &= a * b == c,
+                    );
+                    ok
+                })
+                .reduce(|| true, |a, b| a && b)
+        };
+        if !sat_ok {
+            for value in assign.iter_mut().flatten() {
+                if let crate::solver::Fp::Bn254(scalar) = value {
+                    scalar.zeroize();
+                }
+            }
+            return Err("a constraint is unsatisfied".to_string());
+        }
+        Ok(crate::solver::slots_into_map(assign))
+    }
+
     /// Run the same full row and under-constraint analysis as [`stream_solve_verify`].
     pub fn solve_verify(
         &self,
@@ -1727,6 +1776,7 @@ impl PreparedStreamSolver {
         ),
         String,
     > {
+        let phase_start = std::time::Instant::now();
         let mut assign = eval::solve_witness(
             eval::WitnessProgram::Compiled(&self.witness),
             self.input_vars(),
@@ -1736,9 +1786,11 @@ impl PreparedStreamSolver {
         )
         .map(bn254_witness_slots)
         .map_err(|e| format!("solve: {e:?}"))?;
+        let witness_done = phase_start.elapsed();
         let program = RowProgram::Compiled(&self.rows);
         let (flags, sat_ok, mut quadratic) =
             classify_and_check(program, &assign, &self.modulus, self.num_vars, true);
+        let classify_done = phase_start.elapsed();
         if !sat_ok {
             use zeroize::Zeroize;
             for value in assign.iter_mut().flatten() {
@@ -1761,12 +1813,26 @@ impl PreparedStreamSolver {
         }
         let derived = || derived_vars_with_implicit_suffix(&self.inputs, self.num_vars);
         let suspects = select_suspects(&flags, derived().map(|(id, _)| id));
+        let select_done = phase_start.elapsed();
         let two_valued = if suspects.is_empty() {
             std::collections::BTreeSet::new()
         } else {
             two_valued_satisfied(program, &assign, &self.modulus, &suspects, &quadratic)
         };
+        let second_root_done = phase_start.elapsed();
         let out = assemble_underconstrained(&flags, derived(), &self.keep_extra, &two_valued);
+        if std::env::var_os("XARK_SYNTHETIC_SOLVER_PHASES").is_some() {
+            eprintln!(
+                "synthetic prepared phases witness_ns={} classify_ns={} select_ns={} second_root_ns={} assemble_ns={} suspects={} report={}",
+                witness_done.as_nanos(),
+                (classify_done - witness_done).as_nanos(),
+                (select_done - classify_done).as_nanos(),
+                (second_root_done - select_done).as_nanos(),
+                (phase_start.elapsed() - second_root_done).as_nanos(),
+                suspects.len(),
+                out.len()
+            );
+        }
         Ok((crate::solver::slots_into_map(assign), out))
     }
 }

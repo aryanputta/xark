@@ -365,14 +365,18 @@ fn solve_with_prepared(
         .iter()
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
         .collect();
-    let (fp, _) = if let Some(prepared) = prepared {
+    let fp = if let Some(prepared) = prepared {
         let ids = xark_prover::resolve_input_ids(prepared.input_vars(), &names).unwrap();
-        prepared.solve_verify(&ids)
+        if std::env::var_os("BENCH_SAT_ONLY").is_some() {
+            prepared.solve_satisfied(&ids)
+        } else {
+            prepared.solve_verify(&ids).map(|(fp, _)| fp)
+        }
     } else {
         let vars = xark_ir::function_decode::decode_input_vars(xbc).unwrap();
         let ids = xark_prover::resolve_input_ids(&vars, &names).unwrap();
         drop(vars);
-        xark_ir::function_decode::stream_solve_verify(xbc, &ids)
+        xark_ir::function_decode::stream_solve_verify(xbc, &ids).map(|(fp, _)| fp)
     }
     .unwrap();
     xark_prover::lower_witness(&fp)
