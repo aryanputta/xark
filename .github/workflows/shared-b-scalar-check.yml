@@ -8,6 +8,7 @@ on:
       - integration/prepared-shared-b-secure
       - bench/shared-b-request-ablation
       - fix/shifted-b2-scalar-wipe
+      - test/push-prover-scalar-wipe-linux
       - fix/bench-msm-secret-metadata
       - perf/g2-public-validation
       - perf/g2-gls-boxed-scratch
