@@ -598,6 +598,177 @@ mod tests {
         );
     }
 
+    // This is an operation-shape model for deterministic synthetic scalars,
+    // not a memory trace or a constant-time test. It follows msm.rs's class,
+    // GLV and window rules so the reported bucket updates are comparable.
+    #[test]
+    fn synthetic_cached_gls_bucket_shape_matches_both_group_results() {
+        const CLASS_BITS: [usize; 6] = [1, 16, 32, 64, 128, 256];
+
+        fn bits_at(s: &Scalar, pos: usize, len: usize) -> u64 {
+            let (q, r) = (pos / 64, pos % 64);
+            if q >= 4 {
+                return 0;
+            }
+            let mut value = s.0[q] >> r;
+            if r + len > 64 && q + 1 < 4 {
+                value |= s.0[q + 1] << (64 - r);
+            }
+            value & ((1u64 << len) - 1)
+        }
+
+        fn digit(s: &Scalar, window: usize, width: usize) -> i64 {
+            let pos = window * width;
+            let value = bits_at(s, pos, width) as i64;
+            let carry = if pos == 0 {
+                0
+            } else {
+                bits_at(s, pos - 1, 1) as i64
+            };
+            value + carry - (((value >> (width - 1)) & 1) << width)
+        }
+
+        fn width(n: usize, bits: usize) -> usize {
+            let cost = |c: usize| {
+                let buckets = 1usize << (c - 1);
+                let add = if buckets >= 64 && n >= 4 * buckets {
+                    let turned_away = if buckets >= 256 {
+                        0.1 * (512.0 / buckets as f64).min(1.0)
+                    } else {
+                        0.0
+                    };
+                    0.6 + 10.0 / buckets.min(512) as f64 + turned_away
+                } else {
+                    1.0
+                };
+                (bits + 1).div_ceil(c) as f64 * (n as f64 * add + 0.8 * (1u64 << c) as f64)
+            };
+            (2..=15)
+                .min_by(|&a, &b| cost(a).total_cmp(&cost(b)))
+                .unwrap()
+        }
+
+        #[derive(Debug, Default)]
+        struct Shape {
+            classes: [usize; 6],
+            glv_terms: usize,
+            unit_additions: usize,
+            bucket_updates: usize,
+            window_rows: usize,
+        }
+
+        fn shape(scalars: &[Scalar]) -> Shape {
+            let mut groups: [Vec<Scalar>; 6] = std::array::from_fn(|_| Vec::new());
+            for &scalar in scalars {
+                if scalar.is_zero() {
+                    continue;
+                }
+                let positive_bits = scalar.num_bits() as usize;
+                let mut magnitude = scalar;
+                if positive_bits > 128 {
+                    let mut negative = Fr::MODULUS;
+                    negative.sub_with_borrow(&scalar);
+                    if (negative.num_bits() as usize) < positive_bits {
+                        magnitude = negative;
+                    }
+                }
+                if magnitude.is_zero() {
+                    continue;
+                }
+                let class = CLASS_BITS
+                    .iter()
+                    .position(|&bits| magnitude.num_bits() as usize <= bits)
+                    .unwrap();
+                groups[class].push(if class == 5 { scalar } else { magnitude });
+            }
+            let mut out = Shape {
+                classes: groups.each_ref().map(Vec::len),
+                unit_additions: groups[0].len(),
+                ..Shape::default()
+            };
+            for (class, values) in groups.into_iter().enumerate().skip(1) {
+                if values.is_empty() {
+                    continue;
+                }
+                let (values, bits) = if class == 5
+                    && values.len() * rayon::current_num_threads() <= 1 << 16
+                {
+                    let mut parts = Vec::with_capacity(2 * values.len());
+                    for scalar in values {
+                        let ((_, left), (_, right)) = xark_groth16::glv::g2().decompose(&scalar);
+                        parts.extend([left, right]);
+                    }
+                    out.glv_terms += parts.len();
+                    (parts, 128)
+                } else {
+                    (values, CLASS_BITS[class])
+                };
+                let c = width(values.len(), bits);
+                let windows = (bits + 1).div_ceil(c);
+                out.window_rows += windows;
+                out.bucket_updates += values
+                    .iter()
+                    .flat_map(|scalar| (0..windows).map(move |w| digit(scalar, w, c)))
+                    .filter(|&d| d != 0)
+                    .count();
+            }
+            out
+        }
+
+        for n in [256, 5_406, 7_606] {
+            let generator = G2Projective::generator();
+            let bases: Vec<_> = (1..=n)
+                .map(|i| generator.mul_bigint([i as u64]).into_affine())
+                .collect();
+            let cache = CachedImages::new(&bases).unwrap();
+            let recoder = Recoder::new();
+            let mut rng = ChaCha20Rng::seed_from_u64(0xacc355);
+            let random: Vec<_> = (0..n).map(|_| Fr::rand(&mut rng).into_bigint()).collect();
+            let small: Vec<_> = (0..n)
+                .map(|i| Fr::from((i % 17 + 1) as u64).into_bigint())
+                .collect();
+            let near_modulus: Vec<_> = small
+                .iter()
+                .map(|scalar| {
+                    let mut negative = Fr::MODULUS;
+                    negative.sub_with_borrow(scalar);
+                    negative
+                })
+                .collect();
+            let sparse: Vec<_> = (0..n)
+                .map(|i| {
+                    let bit = [0, 63, 127, 128, 190, 252][i % 6];
+                    let mut limbs = [0u64; 4];
+                    limbs[bit / 64] = 1u64 << (bit % 64);
+                    ArkBigInt(limbs)
+                })
+                .collect();
+
+            for (name, scalars) in [
+                ("zero", vec![Scalar::default(); n]),
+                ("small", small),
+                ("near-modulus", near_modulus),
+                ("sparse", sparse),
+                ("random", random),
+            ] {
+                let recoded = cache.recode::<true>(&recoder, &scalars);
+                let oracle = G2Projective::msm_bigint(&bases, &scalars);
+                assert_eq!(msm::msm::<G2Projective>(&bases, &scalars), oracle);
+                assert_eq!(msm::msm::<G2Projective>(&cache.points, &recoded), oracle);
+                let ordinary = shape(&scalars);
+                let cached = shape(&recoded);
+                eprintln!("synthetic n={n} {name}: ordinary={ordinary:?} cached_gls={cached:?}");
+                assert_eq!(ordinary.unit_additions, cached.unit_additions);
+                if name == "random" {
+                    assert!(ordinary.glv_terms > 0);
+                    assert_eq!(cached.glv_terms, 0);
+                    assert!(cached.classes[4] == 0 && cached.classes[5] == 0);
+                    assert!(cached.window_rows < ordinary.window_rows);
+                }
+            }
+        }
+    }
+
     #[cfg(feature = "msm-g2-shifted-bench")]
     #[test]
     #[should_panic(expected = "cached GLS B2 key mismatch")]
