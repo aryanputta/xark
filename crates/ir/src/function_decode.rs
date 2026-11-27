@@ -1208,12 +1208,12 @@ fn classify_and_check(
             let sat_ok = c
                 .top
                 .par_iter()
-                .map(|item| {
+                .map_init(Vec::new, |scratch, item| {
                     let mut flag =
                         |v: u32, a: ark_bn254::Fr, b: ark_bn254::Fr, _c: ark_bn254::Fr| {
                             note(v, Fp::Bn254(a), Fp::Bn254(b), &flags, &quadratic);
                         };
-                    eval::classify(c, item, &eval::TOP, &[], &z, &mut Vec::new(), &mut flag)
+                    eval::classify(c, item, &eval::TOP, &[], &z, scratch, &mut flag)
                 })
                 .reduce(|| true, |x, y| x && y);
             return (flags, !check_sat || sat_ok, quadratic);
@@ -1332,11 +1332,11 @@ fn two_valued_satisfied(
         RowProgram::Compiled(c) => {
             use crate::solver::Fp;
             let z = bn254_values(assign);
-            c.top.par_iter().for_each(|item| {
+            c.top.par_iter().for_each_init(Vec::new, |scratch, item| {
                 let mut check = |v: u32, a: ark_bn254::Fr, b: ark_bn254::Fr, cc: ark_bn254::Fr| {
                     test.check_poly(v, &Fp::Bn254(a), &Fp::Bn254(b), &Fp::Bn254(cc));
                 };
-                eval::classify(c, item, &eval::TOP, &[], &z, &mut Vec::new(), &mut check);
+                eval::classify(c, item, &eval::TOP, &[], &z, scratch, &mut check);
             });
             return test.survivors();
         }
