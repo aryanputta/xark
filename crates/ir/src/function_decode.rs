@@ -2834,6 +2834,55 @@ mod eval {
         stats
     }
 
+    #[cfg(test)]
+    pub(super) fn expanded_row_layout_stats(c: &Compiled) -> [usize; 3] {
+        fn walk(c: &Compiled, items: &[Item], base: u32, flat: &[Flat], stats: &mut [usize; 3]) {
+            for item in items {
+                match item {
+                    Item::Rows(rows) => {
+                        for row in rows {
+                            let mut ids = Vec::new();
+                            for lc in row {
+                                for &(r, _) in &lc.terms {
+                                    match r {
+                                        VRef::Internal(o) => ids.push(base + o),
+                                        VRef::Global(id) => ids.push(id),
+                                        VRef::Plug(i) => {
+                                            ids.extend(flat[i as usize].iter().map(|&(id, _)| id));
+                                        }
+                                    }
+                                }
+                            }
+                            stats[0] += 1;
+                            stats[1] += ids.len();
+                            stats[2] += usize::from(ids.windows(2).all(|pair| pair[0] <= pair[1]));
+                        }
+                    }
+                    Item::Call {
+                        def,
+                        base: call_base,
+                        plugs,
+                    } => {
+                        let next_base = match *call_base {
+                            VRef::Internal(o) => base + o,
+                            VRef::Global(id) => id,
+                            VRef::Plug(_) => unreachable!("a call base is always a fresh var"),
+                        };
+                        let frame = Frame { base, plugs: &[] };
+                        let nested: Vec<Flat> =
+                            plugs.iter().map(|p| flatten(p, &frame, flat)).collect();
+                        walk(c, &c.defs[*def as usize], next_base, &nested, stats);
+                    }
+                }
+            }
+        }
+        let mut stats = [0; 3]; // expanded rows, terms, rows already ordered
+        for items in &c.top {
+            walk(c, items, 0, &[], &mut stats);
+        }
+        stats
+    }
+
     #[inline]
     fn val(r: VRef, f: &Frame, z: &dyn Fn(u32) -> Fr) -> Fr {
         match r {
@@ -3512,6 +3561,9 @@ mod tests {
         println!(
             "layout rows={rows} top_rows={top_rows} terms={terms} zero_or_one={zero_or_one} already_sorted={already_sorted} calls={calls}"
         );
+        let [expanded_rows, expanded_terms, expanded_sorted] =
+            eval::expanded_row_layout_stats(&compiled);
+        println!("expanded rows={expanded_rows} terms={expanded_terms} ordered={expanded_sorted}");
     }
 
     #[test]
