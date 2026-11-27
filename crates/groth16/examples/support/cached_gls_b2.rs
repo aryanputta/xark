@@ -753,11 +753,39 @@ mod tests {
             ] {
                 let recoded = cache.recode::<true>(&recoder, &scalars);
                 let oracle = G2Projective::msm_bigint(&bases, &scalars);
+                #[cfg(feature = "msm-access-audit")]
+                let _ = msm::access_audit::take();
                 assert_eq!(msm::msm::<G2Projective>(&bases, &scalars), oracle);
+                #[cfg(feature = "msm-access-audit")]
+                let ordinary_access = msm::access_audit::take();
                 assert_eq!(msm::msm::<G2Projective>(&cache.points, &recoded), oracle);
+                #[cfg(feature = "msm-access-audit")]
+                let cached_access = msm::access_audit::take();
                 let ordinary = shape(&scalars);
                 let cached = shape(&recoded);
                 eprintln!("synthetic n={n} {name}: ordinary={ordinary:?} cached_gls={cached:?}");
+                #[cfg(feature = "msm-access-audit")]
+                {
+                    assert_eq!(
+                        ordinary_access.window_base_reads as usize,
+                        ordinary.bucket_updates
+                    );
+                    assert_eq!(
+                        cached_access.window_base_reads as usize,
+                        cached.bucket_updates
+                    );
+                    assert_eq!(
+                        ordinary_access.affine_adds + ordinary_access.projective_updates,
+                        ordinary_access.window_base_reads
+                    );
+                    assert_eq!(
+                        cached_access.affine_adds + cached_access.projective_updates,
+                        cached_access.window_base_reads
+                    );
+                    eprintln!(
+                        "executed synthetic n={n} {name}: ordinary={ordinary_access:?} cached_gls={cached_access:?}"
+                    );
+                }
                 assert_eq!(ordinary.unit_additions, cached.unit_additions);
                 if name == "random" {
                     assert!(ordinary.glv_terms > 0);
@@ -791,8 +819,14 @@ mod tests {
                 let cache = CachedImages::new(bases).unwrap();
                 let recoded = cache.recode::<true>(&Recoder::new(), &scalars);
                 let expected = G2Projective::msm_bigint(bases, &scalars);
+                #[cfg(feature = "msm-access-audit")]
+                let _ = msm::access_audit::take();
                 assert_eq!(msm::msm::<G2Projective>(bases, &scalars), expected);
+                #[cfg(feature = "msm-access-audit")]
+                let ordinary_access = msm::access_audit::take();
                 assert_eq!(msm::msm::<G2Projective>(&cache.points, &recoded), expected);
+                #[cfg(feature = "msm-access-audit")]
+                let cached_access = msm::access_audit::take();
                 let visible = Zeroizing::new(
                     bases
                         .iter()
@@ -811,6 +845,20 @@ mod tests {
                     shape(&visible),
                     shape(&recoded)
                 );
+                #[cfg(feature = "msm-access-audit")]
+                {
+                    assert_eq!(
+                        ordinary_access.window_base_reads as usize,
+                        shape(&visible).bucket_updates
+                    );
+                    assert_eq!(
+                        cached_access.window_base_reads as usize,
+                        shape(&recoded).bucket_updates
+                    );
+                    eprintln!(
+                        "executed pinned synthetic fixture {circuit}: ordinary={ordinary_access:?} cached_gls={cached_access:?}"
+                    );
+                }
             }
         }
     }

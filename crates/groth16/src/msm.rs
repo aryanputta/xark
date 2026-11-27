@@ -19,6 +19,62 @@ use ark_serialize::CanonicalSerialize;
 use rayon::prelude::*;
 use zeroize::Zeroizing;
 
+/// Aggregate executed MSM accesses for synthetic fixture tests only. The
+/// feature adds atomics to hot loops and must never be used for timing.
+#[cfg(feature = "msm-access-audit")]
+#[doc(hidden)]
+pub mod access_audit {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    pub(super) static GATHER_READS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static WINDOW_BASE_READS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static AFFINE_ADDS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static PLACE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static PLACE_CONFLICTS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static SPILL_ADDS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static NONEMPTY_FLUSHES: AtomicU64 = AtomicU64::new(0);
+    pub(super) static PROJECTIVE_UPDATES: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub struct Counts {
+        pub gather_reads: u64,
+        pub window_base_reads: u64,
+        pub affine_adds: u64,
+        pub place_attempts: u64,
+        pub place_conflicts: u64,
+        pub spill_adds: u64,
+        pub nonempty_flushes: u64,
+        pub projective_updates: u64,
+    }
+
+    /// Use around one sequential synthetic MSM invocation, with one test
+    /// thread. Concurrent unrelated MSMs would contaminate these counters.
+    pub fn take() -> Counts {
+        Counts {
+            gather_reads: GATHER_READS.swap(0, Ordering::Relaxed),
+            window_base_reads: WINDOW_BASE_READS.swap(0, Ordering::Relaxed),
+            affine_adds: AFFINE_ADDS.swap(0, Ordering::Relaxed),
+            place_attempts: PLACE_ATTEMPTS.swap(0, Ordering::Relaxed),
+            place_conflicts: PLACE_CONFLICTS.swap(0, Ordering::Relaxed),
+            spill_adds: SPILL_ADDS.swap(0, Ordering::Relaxed),
+            nonempty_flushes: NONEMPTY_FLUSHES.swap(0, Ordering::Relaxed),
+            projective_updates: PROJECTIVE_UPDATES.swap(0, Ordering::Relaxed),
+        }
+    }
+}
+
+#[cfg(feature = "msm-access-audit")]
+macro_rules! audit_inc {
+    ($counter:ident) => {
+        access_audit::$counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    };
+}
+
+#[cfg(not(feature = "msm-access-audit"))]
+macro_rules! audit_inc {
+    ($counter:ident) => {};
+}
+
 #[cfg(feature = "msm-g2-shifted-bench")]
 #[doc(hidden)]
 pub mod shifted;
@@ -176,12 +232,14 @@ impl<G: SwCurve> AffineBuckets<G> {
     /// already in this batch.
     #[inline(always)]
     fn place(&mut self, b: u32, px: G::BaseField, py: G::BaseField) -> bool {
+        audit_inc!(PLACE_ATTEMPTS);
         let bi = b as usize;
         if !self.used[bi] {
             self.x[bi] = px;
             self.y[bi] = py;
             self.used[bi] = true;
         } else if self.stamp[bi] == self.epoch {
+            audit_inc!(PLACE_CONFLICTS);
             return false;
         } else {
             self.stamp[bi] = self.epoch;
@@ -223,12 +281,16 @@ impl<G: SwCurve> AffineBuckets<G> {
             self.side = vec![G::ZERO_BUCKET; self.x.len()];
         }
         for &(b, px, py) in &self.queue {
+            audit_inc!(SPILL_ADDS);
             self.side[b as usize] += &G::from_xy(px, py);
         }
         self.queue.clear();
     }
 
     fn flush(&mut self) {
+        if !self.batch.is_empty() {
+            audit_inc!(NONEMPTY_FLUSHES);
+        }
         #[cfg(feature = "msm-g2-endpoint-bench")]
         if self.trim_inverse_endpoints {
             self.invert_and_update::<true>();
@@ -607,7 +669,10 @@ fn pippenger_core<G: SwCurve>(
         entries
             .par_iter()
             .with_min_len(4096)
-            .map(|&e| bases[(e & !NEG) as usize])
+            .map(|&e| {
+                audit_inc!(GATHER_READS);
+                bases[(e & !NEG) as usize]
+            })
             .collect()
     });
 
@@ -637,8 +702,10 @@ fn pippenger_core<G: SwCurve>(
                     if d == 0 {
                         continue;
                     }
+                    audit_inc!(WINDOW_BASE_READS);
                     let p = base_of(k);
                     if let Some((x, y)) = G::xy(p) {
+                        audit_inc!(AFFINE_ADDS);
                         ab.add((d.unsigned_abs() - 1) as u32, x, if d < 0 { -y } else { y });
                     }
                 }
@@ -664,11 +731,13 @@ fn pippenger_core<G: SwCurve>(
                 if d == 0 {
                     continue;
                 }
+                audit_inc!(WINDOW_BASE_READS);
                 let base = match &gathered {
                     Some(g) => &g[k],
                     None => &bases[(entries[k] & !NEG) as usize],
                 };
                 let bucket = &mut buckets[(d.unsigned_abs() - 1) as usize];
+                audit_inc!(PROJECTIVE_UPDATES);
                 if d < 0 {
                     *bucket -= base;
                 } else {
