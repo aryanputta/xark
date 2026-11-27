@@ -193,6 +193,8 @@ pub fn set_bench_g2_sparse_endomorphism(enabled: bool) {
 /// if the queue stays full (skewed digits: a few hot buckets) does what is left
 /// go to XYZZ side buckets, allocated then, so batches never stall.
 struct AffineBuckets<G: SwCurve> {
+    /// Public, compile-time selected audit capacity. G1 retains the default.
+    limit: usize,
     x: Vec<G::BaseField>,
     y: Vec<G::BaseField>,
     used: Vec<bool>,
@@ -211,17 +213,24 @@ struct AffineBuckets<G: SwCurve> {
 
 impl<G: SwCurve> AffineBuckets<G> {
     fn new(nb: usize) -> Self {
+        let limit =
+            if cfg!(feature = "msm-large-batch-audit") && G::BaseField::extension_degree() == 2 {
+                1024
+            } else {
+                BATCH
+            };
         AffineBuckets {
+            limit,
             x: vec![G::BaseField::zero(); nb],
             y: vec![G::BaseField::zero(); nb],
             used: vec![false; nb],
             stamp: vec![0; nb],
             epoch: 1,
-            batch: Vec::with_capacity(BATCH),
-            queue: Vec::with_capacity(BATCH),
+            batch: Vec::with_capacity(limit),
+            queue: Vec::with_capacity(limit),
             side: Vec::new(),
-            den: Vec::with_capacity(BATCH),
-            pre: Vec::with_capacity(BATCH),
+            den: Vec::with_capacity(limit),
+            pre: Vec::with_capacity(limit),
             #[cfg(feature = "msm-g2-endpoint-bench")]
             trim_inverse_endpoints: G::BaseField::extension_degree() == 2
                 && G2_TRIM_INVERSE_ENDPOINTS.load(std::sync::atomic::Ordering::Relaxed),
@@ -244,7 +253,7 @@ impl<G: SwCurve> AffineBuckets<G> {
         } else {
             self.stamp[bi] = self.epoch;
             self.batch.push((b, px, py));
-            if self.batch.len() == BATCH {
+            if self.batch.len() == self.limit {
                 self.flush();
             }
         }
@@ -256,10 +265,10 @@ impl<G: SwCurve> AffineBuckets<G> {
         let epoch = self.epoch;
         if !self.place(b, px, py) {
             self.queue.push((b, px, py));
-            if self.queue.len() == BATCH {
+            if self.queue.len() == self.limit {
                 self.flush();
                 self.drain();
-                if self.queue.len() > BATCH / 2 {
+                if self.queue.len() > self.limit / 2 {
                     self.spill();
                 }
             }
