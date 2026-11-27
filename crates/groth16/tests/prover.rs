@@ -470,6 +470,56 @@ fn shared_b_scalars_match_split_cpu_across_distinct_requests() {
         }
     }
 
+    // With shared B disabled, the resident B2 callback must receive an owned,
+    // request-local scalar buffer. This also covers the cached-GLS dispatch seam.
+    #[cfg(feature = "msm-g2-shifted-bench")]
+    {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use xark_groth16::msm::{self, Scalar};
+        use xark_groth16::prover::BenchResidentB2;
+
+        struct ResidentB2<'a>(&'a BenchResidentB2<'a>);
+        impl xark_groth16::Probe for ResidentB2<'_> {
+            fn cached_gls_g2(&self) -> Option<&BenchResidentB2<'_>> {
+                Some(self.0)
+            }
+        }
+
+        let calls = AtomicUsize::new(0);
+        let b2 = |bases: &[ark_bn254::G2Affine], scalars: &[Scalar]| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            msm::msm::<ark_bn254::G2Projective>(bases, scalars)
+        };
+        let z = src.layout().assignment_from_map(&assign(6, 7));
+        let (r, s) = (Fr::from(11u64), Fr::from(17u64));
+        let baseline = xark_groth16::prove_with_randomness(
+            &src,
+            &z,
+            &mut InMemoryPk::new(&key),
+            r,
+            s,
+            &config,
+            &mut (),
+        )
+        .unwrap();
+        let proof = xark_groth16::prove_with_randomness(
+            &src,
+            &z,
+            &mut InMemoryPk::new(&key),
+            r,
+            s,
+            &config,
+            &mut ResidentB2(&b2),
+        )
+        .unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(proof, baseline);
+        assert!(xark_groth16::verify(&vk, &[Fr::from(42u64)], &proof).unwrap());
+        assert!(!xark_groth16::verify(&vk, &[Fr::from(43u64)], &proof).unwrap());
+        assert!(ArkG16::verify(&vk, &[Fr::from(42u64)], &proof).unwrap());
+        assert!(!ArkG16::verify(&vk, &[Fr::from(43u64)], &proof).unwrap());
+    }
+
     // Each concurrent request owns its witness and canonical B-scalar buffer.
     // Reusing one immutable key must not mix the two public statements.
     struct SharedWithoutTiming;
