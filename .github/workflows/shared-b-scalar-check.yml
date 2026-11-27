@@ -14,6 +14,7 @@ on:
       - perf/sparse-resident-solver-metadata
       - feat/prepared-cpu-prover
       - validation/prepared-decimal-wipe-guard
+      - test/prepared-row-scalar-wipe-linux
 
 permissions:
   contents: read
