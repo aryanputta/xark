@@ -1723,6 +1723,18 @@ impl PreparedStreamSolver {
         &self,
         inputs: &BTreeMap<u32, String>,
     ) -> Result<BTreeMap<u32, crate::solver::Fp>, String> {
+        self.solve_satisfied_slots(inputs)
+            .map(crate::solver::slots_into_map)
+    }
+
+    /// The same checked assignment indexed by variable id, for provers whose
+    /// layout consumes dense slots directly. Missing variables remain `None`.
+    /// The returned slots contain private witness values and belong to this
+    /// request; callers must clear them after constructing the proof witness.
+    pub fn solve_satisfied_slots(
+        &self,
+        inputs: &BTreeMap<u32, String>,
+    ) -> Result<Vec<Option<crate::solver::Fp>>, String> {
         use rayon::prelude::*;
         use zeroize::Zeroize;
 
@@ -1762,7 +1774,7 @@ impl PreparedStreamSolver {
             }
             return Err("a constraint is unsatisfied".to_string());
         }
-        Ok(crate::solver::slots_into_map(assign))
+        Ok(assign)
     }
 
     /// Run the same full row and under-constraint analysis as [`stream_solve_verify`].

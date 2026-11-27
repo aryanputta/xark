@@ -100,14 +100,20 @@ impl PreparedCpuProver {
             if decimal.len() != self.inputs.len() {
                 return Err(ProveError("missing circuit input".into()));
             }
-            self.solver.solve_satisfied(&decimal).map_err(ProveError)
+            self.solver
+                .solve_satisfied_slots(&decimal)
+                .map_err(ProveError)
         })();
         decimal.values_mut().for_each(Zeroize::zeroize);
         let mut assignment = solved?;
         let layout = self.rows.layout();
-        let witness =
-            Zeroizing::new(layout.assignment(|id| assignment.get(&id).and_then(Fp::as_bn254_fr)));
-        for value in assignment.values_mut() {
+        let witness = Zeroizing::new(layout.assignment(|id| {
+            assignment
+                .get(id as usize)
+                .and_then(Option::as_ref)
+                .and_then(Fp::as_bn254_fr)
+        }));
+        for value in assignment.iter_mut().flatten() {
             if let Fp::Bn254(scalar) = value {
                 scalar.zeroize();
             }
