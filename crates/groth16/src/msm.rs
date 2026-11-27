@@ -116,6 +116,18 @@ static G2_TRIM_INVERSE_ENDPOINTS: std::sync::atomic::AtomicBool =
 static G2_SPARSE_ENDOMORPHISM: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(feature = "msm-g2-norm-batch-audit")]
+static G2_NORM_BATCH_INVERSION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Enable norm-projected G2 batch inversion for an audit run. The portable
+/// path, G1, and endpoint-trimmed G2 path retain their original implementation.
+#[cfg(feature = "msm-g2-norm-batch-audit")]
+#[doc(hidden)]
+pub fn set_bench_g2_norm_batch_inversion(enabled: bool) {
+    G2_NORM_BATCH_INVERSION.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Toggle endpoint elision in G2 affine batch inversion before benchmarking.
 #[cfg(feature = "msm-g2-endpoint-bench")]
 #[doc(hidden)]
@@ -257,6 +269,25 @@ impl<G: SwCurve> AffineBuckets<G> {
                 G::BaseField::one() // P + (−P) = ∞: no inverse needed
             }
         };
+        #[cfg(feature = "msm-g2-norm-batch-audit")]
+        if !TRIM
+            && G::BaseField::extension_degree() == 2
+            && G2_NORM_BATCH_INVERSION.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            for &(b, px, py) in &self.batch {
+                self.den.push(denominator(b, px, py));
+            }
+            // Move only Vec headers so the callback can update bucket state.
+            // The buffers are request-local and their capacity is reused.
+            let denominators = std::mem::take(&mut self.den);
+            let mut scratch = std::mem::take(&mut self.pre);
+            G::BaseField::batch_inverses(&denominators, &mut scratch, |i, inverse| {
+                self.apply_inverse(i, inverse);
+            });
+            self.den = denominators;
+            self.pre = scratch;
+            return;
+        }
         let mut acc = if TRIM {
             let Some(&(b, px, py)) = self.batch.first() else {
                 return;
@@ -791,6 +822,45 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
 mod tests {
     use super::*;
     use ark_ff::Zero;
+
+    #[cfg(feature = "msm-g2-norm-batch-audit")]
+    #[test]
+    fn g2_norm_batch_matches_arkworks_at_boundaries() {
+        use ark_bn254::{G2Affine, G2Projective};
+        use ark_ec::AffineRepr;
+
+        let p = G2Affine::generator();
+        let q = (p.into_group() + p).into_affine();
+        for enabled in [false, true] {
+            set_bench_g2_norm_batch_inversion(enabled);
+            for count in [0, 1, 2, 511, 512, 513] {
+                for point in [p, q, -p] {
+                    let mut buckets = AffineBuckets::<G2Projective>::new(count.max(1));
+                    for bucket in 0..count {
+                        let (x, y) = p.xy().unwrap();
+                        buckets.add(bucket as u32, x, y);
+                    }
+                    for bucket in 0..count {
+                        let (x, y) = point.xy().unwrap();
+                        buckets.add(bucket as u32, x, y);
+                    }
+                    let (xs, ys, used, side) = buckets.finish();
+                    for bucket in 0..count {
+                        let mut actual: G2Projective =
+                            side.get(bucket).copied().unwrap_or_default().into();
+                        if used[bucket] {
+                            actual += G2Projective::from_xy(xs[bucket], ys[bucket]);
+                        }
+                        assert!(
+                            same_point(&actual, &(p.into_group() + point)),
+                            "enabled={enabled}, count={count}, bucket={bucket}"
+                        );
+                    }
+                }
+            }
+        }
+        set_bench_g2_norm_batch_inversion(false);
+    }
 
     #[cfg(feature = "msm-g2-endpoint-bench")]
     #[test]

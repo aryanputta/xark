@@ -422,6 +422,22 @@ fn main() {
         TRACK.store(false, Relaxed);
     }
     let args: Vec<String> = std::env::args().collect();
+    // warm-requests dispatches before the other audit switches below.
+    #[cfg(feature = "msm-g2-norm-batch-audit")]
+    {
+        let norm = match std::env::var("BENCH_G2_NORM_BATCH_INVERSION").as_deref() {
+            Ok("1") => true,
+            Ok("0") | Err(std::env::VarError::NotPresent) => false,
+            _ => panic!("BENCH_G2_NORM_BATCH_INVERSION must be 0 or 1"),
+        };
+        xark_groth16::msm::set_bench_g2_norm_batch_inversion(norm);
+        eprintln!("bench g2 norm batch inversion: {}", u8::from(norm));
+    }
+    #[cfg(not(feature = "msm-g2-norm-batch-audit"))]
+    assert!(
+        std::env::var_os("BENCH_G2_NORM_BATCH_INVERSION").is_none(),
+        "BENCH_G2_NORM_BATCH_INVERSION requires the msm-g2-norm-batch-audit feature"
+    );
     if args.get(1).is_some_and(|mode| mode == "warm-requests") {
         #[cfg(feature = "msm-g2-shifted-bench")]
         {
