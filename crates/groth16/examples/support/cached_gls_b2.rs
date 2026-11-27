@@ -697,4 +697,36 @@ mod tests {
         assert!(!off_curve.is_on_curve());
         assert_eq!(check_subgroup(&[off_curve], true), Err(0));
     }
+
+    #[test]
+    fn signed_subgroup_matches_full_order_on_random_curve_points() {
+        // The public-key gate must reject twist points outside the r-subgroup.
+        // Seeded sampling makes failures reproducible; full-order multiplication
+        // is independent of the Frobenius predicate used by the fast gate.
+        let mut rng = ChaCha20Rng::seed_from_u64(254_061);
+        let mut outsiders = 0;
+        let mut curve_points = 0;
+        while curve_points < 256 {
+            let x = Fq2::rand(&mut rng);
+            let Some(point) = G2Affine::get_point_from_x_unchecked(x, false) else {
+                continue;
+            };
+            assert!(point.is_on_curve());
+            let full_order = point.mul_bigint(Fr::MODULUS).is_zero();
+            outsiders += usize::from(!full_order);
+            assert_eq!(signed_subgroup(&point), full_order);
+            assert_eq!(point.is_in_correct_subgroup_assuming_on_curve(), full_order);
+            curve_points += 1;
+        }
+        assert!(outsiders >= 200, "sample did not exercise enough outsiders");
+
+        for _ in 0..128 {
+            let scalar = Fr::rand(&mut rng);
+            let point = G2Projective::generator()
+                .mul_bigint(scalar.into_bigint())
+                .into_affine();
+            assert!(signed_subgroup(&point));
+            assert!(point.mul_bigint(Fr::MODULUS).is_zero());
+        }
+    }
 }

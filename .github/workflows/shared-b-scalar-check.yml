@@ -10,6 +10,7 @@ on:
       - fix/shifted-b2-scalar-wipe
       - fix/bench-msm-secret-metadata
       - perf/g2-public-validation
+      - audit/g2-signed-subgroup-randomized
       - perf/g2-gls-boxed-scratch
       - test/g2-resident-request-batches
       - perf/resident-stream-solver
