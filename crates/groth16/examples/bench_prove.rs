@@ -10,6 +10,8 @@
 //! bench_prove stream <circuit.xbc> <pk.bin> <inputs.json> [--source xbc|min] [--tile N] [--chunk N]
 //! BENCH_TIME=1 bench_prove warm <circuit.xbc> <reduced pk.bin> <inputs.json> [proofs] [warmups]
 //! BENCH_TIME=1 bench_prove warm-requests <circuit.xbc> <reduced pk.bin> <cpu|gls> <concurrency> <requests> <fixture-dir>...
+//! With `msm-dual-chain-bench`, `BENCH_DUAL_CHAIN=0|1` selects the generic
+//! B1/B2 one-inversion two-chain affine flush before workers start.
 //! BENCH_TIME=1 bench_prove query-msm <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-xark <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
 //! BENCH_TIME=1 bench_prove query-msm-b2-shifted <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
@@ -424,6 +426,25 @@ fn main() {
     if std::env::var("BENCH_TIME").is_ok() {
         TRACK.store(false, Relaxed);
     }
+    #[cfg(feature = "msm-dual-chain-bench")]
+    {
+        let enabled = match std::env::var("BENCH_DUAL_CHAIN").as_deref() {
+            Err(std::env::VarError::NotPresent) | Ok("0") => false,
+            Ok("1") => true,
+            _ => panic!("BENCH_DUAL_CHAIN must be 0 or 1"),
+        };
+        assert!(
+            !enabled || std::env::var("BENCH_G2_TRIM_INVERSE_ENDPOINTS").as_deref() != Ok("1"),
+            "dual chain and trimmed G2 inversion cannot be combined in this bench"
+        );
+        xark_groth16::msm::set_bench_dual_chain(enabled);
+        eprintln!("bench B1/B2 dual inverse chain: {}", u8::from(enabled));
+    }
+    #[cfg(not(feature = "msm-dual-chain-bench"))]
+    assert!(
+        std::env::var_os("BENCH_DUAL_CHAIN").is_none(),
+        "BENCH_DUAL_CHAIN requires msm-dual-chain-bench"
+    );
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_some_and(|mode| mode == "warm-requests") {
         #[cfg(feature = "msm-g2-shifted-bench")]

@@ -243,6 +243,16 @@ pub static GLV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// Additions per shared inversion.
 const BATCH: usize = 512;
 
+#[cfg(feature = "msm-dual-chain-bench")]
+static DUAL_CHAIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Bench-only, public process setting. Call before starting proof workers.
+#[cfg(feature = "msm-dual-chain-bench")]
+#[doc(hidden)]
+pub fn set_bench_dual_chain(enabled: bool) {
+    DUAL_CHAIN.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[cfg(feature = "msm-g2-endpoint-bench")]
 static G2_TRIM_INVERSE_ENDPOINTS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -284,6 +294,8 @@ struct AffineBuckets<G: SwCurve> {
     side: Vec<G::Bucket>,
     den: Vec<G::BaseField>,
     pre: Vec<G::BaseField>,
+    #[cfg(feature = "msm-dual-chain-bench")]
+    dual_chain: bool,
     #[cfg(feature = "msm-stage-profile-bench")]
     profile: Option<std::sync::Arc<stage_profile::Counters>>,
     #[cfg(feature = "msm-g2-endpoint-bench")]
@@ -303,6 +315,8 @@ impl<G: SwCurve> AffineBuckets<G> {
             side: Vec::new(),
             den: Vec::with_capacity(BATCH),
             pre: Vec::with_capacity(BATCH),
+            #[cfg(feature = "msm-dual-chain-bench")]
+            dual_chain: DUAL_CHAIN.load(std::sync::atomic::Ordering::Relaxed),
             #[cfg(feature = "msm-stage-profile-bench")]
             profile: None,
             #[cfg(feature = "msm-g2-endpoint-bench")]
@@ -373,13 +387,23 @@ impl<G: SwCurve> AffineBuckets<G> {
         #[cfg(feature = "msm-stage-profile-bench")]
         let nonempty = !self.batch.is_empty();
         #[cfg(feature = "msm-g2-endpoint-bench")]
-        if self.trim_inverse_endpoints {
+        let trim = self.trim_inverse_endpoints;
+        #[cfg(not(feature = "msm-g2-endpoint-bench"))]
+        let trim = false;
+        #[cfg(feature = "msm-dual-chain-bench")]
+        if self.dual_chain && !trim && self.batch.len() >= 2 {
+            self.invert_dual_chain();
+        } else if trim {
             self.invert_and_update::<true>();
         } else {
             self.invert_and_update::<false>();
         }
-        #[cfg(not(feature = "msm-g2-endpoint-bench"))]
-        self.invert_and_update::<false>();
+        #[cfg(not(feature = "msm-dual-chain-bench"))]
+        if trim {
+            self.invert_and_update::<true>();
+        } else {
+            self.invert_and_update::<false>();
+        }
         self.batch.clear();
         self.epoch = self.epoch.wrapping_add(1).max(1);
         #[cfg(feature = "msm-stage-profile-bench")]
@@ -390,6 +414,98 @@ impl<G: SwCurve> AffineBuckets<G> {
                     .nonempty_flushes
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
+        }
+    }
+
+    /// Two independent product chains, joined for one inversion. For n batch
+    /// denominators this uses n prefix products, 2n reverse products and three
+    /// extra products (join and recover each lane inverse), versus n + 2n for
+    /// the serial path. The hypothesis is shorter dependency chains, not fewer
+    /// field operations. Only immutable public configuration selects this path.
+    #[cfg(feature = "msm-dual-chain-bench")]
+    #[inline]
+    fn invert_dual_chain(&mut self) {
+        use crate::limbs::FastSub;
+        use ark_ff::AdditiveGroup;
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let denominator_start = self.profile.as_ref().map(|_| std::time::Instant::now());
+        self.den.clear();
+        self.pre.clear();
+        let mut even = G::BaseField::one();
+        let mut odd = G::BaseField::one();
+        for (i, &(b, px, py)) in self.batch.iter().enumerate() {
+            let (x, y) = (self.x[b as usize], self.y[b as usize]);
+            let d = if x != px {
+                px.fsub(&x)
+            } else if y == py && !y.is_zero() {
+                y.double()
+            } else {
+                G::BaseField::one()
+            };
+            self.den.push(d);
+            if i % 2 == 0 {
+                self.pre.push(even);
+                even *= d;
+            } else {
+                self.pre.push(odd);
+                odd *= d;
+            }
+        }
+        let joined = even * odd;
+        #[cfg(feature = "msm-stage-profile-bench")]
+        if let (Some(profile), Some(start)) = (&self.profile, denominator_start) {
+            stage_profile::add(&profile.denominator_prefix_ns, start);
+        }
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let inversion_start = self.profile.as_ref().map(|_| std::time::Instant::now());
+        let joined_inverse = joined.inverse().expect("nonzero batch denominator");
+        #[cfg(feature = "msm-stage-profile-bench")]
+        if let (Some(profile), Some(start)) = (&self.profile, inversion_start) {
+            stage_profile::add(&profile.inversion_ns, start);
+        }
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let recovery_start = self.profile.as_ref().map(|_| std::time::Instant::now());
+        let mut inverse_even = joined_inverse * odd;
+        let mut inverse_odd = joined_inverse * even;
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let enabled = self.profile.is_some();
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let mut reverse_chain_ns =
+            recovery_start.map_or(0, |start| start.elapsed().as_nanos() as u64);
+        #[cfg(feature = "msm-stage-profile-bench")]
+        let mut point_update_ns = 0;
+        for i in (0..self.batch.len()).rev() {
+            #[cfg(feature = "msm-stage-profile-bench")]
+            let chain_start = enabled.then(std::time::Instant::now);
+            let inverse = if i % 2 == 0 {
+                let result = inverse_even * self.pre[i];
+                inverse_even *= self.den[i];
+                result
+            } else {
+                let result = inverse_odd * self.pre[i];
+                inverse_odd *= self.den[i];
+                result
+            };
+            #[cfg(feature = "msm-stage-profile-bench")]
+            if let Some(start) = chain_start {
+                reverse_chain_ns += start.elapsed().as_nanos() as u64;
+            }
+            #[cfg(feature = "msm-stage-profile-bench")]
+            let update_start = enabled.then(std::time::Instant::now);
+            self.apply_inverse(i, inverse);
+            #[cfg(feature = "msm-stage-profile-bench")]
+            if let Some(start) = update_start {
+                point_update_ns += start.elapsed().as_nanos() as u64;
+            }
+        }
+        #[cfg(feature = "msm-stage-profile-bench")]
+        if let Some(profile) = &self.profile {
+            profile
+                .reverse_chain_ns
+                .fetch_add(reverse_chain_ns, std::sync::atomic::Ordering::Relaxed);
+            profile
+                .point_update_ns
+                .fetch_add(point_update_ns, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -1116,6 +1232,87 @@ pub fn msm<G: SwCurve>(bases: &[G::Affine], scalars: &[Scalar]) -> G {
 mod tests {
     use super::*;
     use ark_ff::Zero;
+
+    #[cfg(feature = "msm-dual-chain-bench")]
+    fn check_dual_chain_buckets<G: SwCurve>() {
+        use ark_ec::AffineRepr;
+        let p = G::Affine::generator();
+        let q = (p.into_group() + p).into_affine();
+        for count in [0, 1, 2, 3, 511, 512] {
+            for dual in [false, true] {
+                let mut buckets = AffineBuckets::<G>::new(count.max(1));
+                buckets.dual_chain = dual;
+                for b in 0..count {
+                    let (x, y) = G::xy(&p).unwrap();
+                    buckets.add(b as u32, x, y);
+                }
+                for b in 0..count {
+                    let point = match b % 3 {
+                        0 => q,
+                        1 => p,
+                        _ => -p,
+                    };
+                    let (x, y) = G::xy(&point).unwrap();
+                    buckets.add(b as u32, x, y);
+                }
+                let (xs, ys, used, side) = buckets.finish();
+                assert!(side.is_empty());
+                for b in 0..count {
+                    let point = match b % 3 {
+                        0 => q,
+                        1 => p,
+                        _ => -p,
+                    };
+                    let expected = p.into_group() + point;
+                    let actual = if used[b] {
+                        G::from_xy(xs[b], ys[b]).into_group()
+                    } else {
+                        G::zero()
+                    };
+                    assert!(
+                        same_point(&actual, &expected),
+                        "count={count} bucket={b} dual={dual}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "msm-dual-chain-bench")]
+    #[test]
+    fn dual_chain_g1_g2_bucket_boundaries_match_arkworks() {
+        check_dual_chain_buckets::<ark_bn254::G1Projective>();
+        check_dual_chain_buckets::<ark_bn254::G2Projective>();
+    }
+
+    #[cfg(feature = "msm-dual-chain-bench")]
+    fn check_dual_chain_msm<G: SwCurve>() {
+        use ark_ec::AffineRepr;
+        let generator = G::Affine::generator();
+        let mut point = G::zero();
+        let bases: Vec<G::Affine> = (0..600)
+            .map(|_| {
+                point += generator;
+                point.into_affine()
+            })
+            .collect();
+        let scalars: Vec<Scalar> = (0..600)
+            .map(|i| Fr::from((i * 37 + 1) as u64).into_bigint())
+            .collect();
+        let reference = G::msm_bigint(&bases, &scalars);
+        for dual in [false, true] {
+            set_bench_dual_chain(dual);
+            assert!(same_point(&msm::<G>(&bases, &scalars), &reference));
+        }
+        set_bench_dual_chain(false);
+    }
+
+    #[cfg(feature = "msm-dual-chain-bench")]
+    #[test]
+    fn dual_chain_complete_g1_g2_msm_matches_arkworks() {
+        check_dual_chain_msm::<ark_bn254::G1Projective>();
+        check_dual_chain_msm::<ark_bn254::G2Projective>();
+    }
 
     #[cfg(feature = "msm-g2-endpoint-bench")]
     #[test]
