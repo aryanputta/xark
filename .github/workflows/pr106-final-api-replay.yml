@@ -76,6 +76,25 @@ jobs:
             candidate/target/ci/examples/bench_prepared_api \
             /tmp/pr106-fixtures candidate/benches/pr106-final-api/evidence/fixtures.sha256 \
             /tmp/pr106-replay --upstream-source upstream --prepared-source candidate
+      - name: Print control pair measurements
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('/tmp/pr106-replay/report.json')
+          if not path.exists():
+              print('No replay report was written')
+              raise SystemExit(0)
+          report = json.loads(path.read_text())
+          print(json.dumps({'source_commits': report['source_commits'],
+                            'binary_sha256': report['binary_sha256'],
+                            'topology_ok': report['topology_ok'],
+                            'control_failures': report['control_failures'],
+                            'controls': [{key: row[key] for key in
+                                          ('tag', 'p50_ns', 'p95_ns', 'setup_ns', 'peak_rss_bytes')}
+                                         for row in report['controls']]}, indent=2))
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
