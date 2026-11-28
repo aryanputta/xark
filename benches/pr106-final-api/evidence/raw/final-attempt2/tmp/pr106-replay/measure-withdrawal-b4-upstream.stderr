@@ -1,0 +1,27 @@
+request solver index=0 solve_ns=40977030
+request solver index=1 solve_ns=39053987
+request solver index=2 solve_ns=38822114
+request solver index=3 solve_ns=39228742
+request solver index=4 solve_ns=38728649
+request solver index=5 solve_ns=39140629
+request solver index=6 solve_ns=38274369
+request solver index=7 solve_ns=38204878
+request solver index=8 solve_ns=39966120
+request solver index=9 solve_ns=40711494
+request solver index=10 solve_ns=38571755
+request solver index=11 solve_ns=45574614
+request solver index=12 solve_ns=38480895
+request solver index=13 solve_ns=38258810
+request solver index=14 solve_ns=38210951
+request solver index=15 solve_ns=38298874
+request solver index=16 solve_ns=38942358
+request solver index=17 solve_ns=38010977
+request solver index=18 solve_ns=38051342
+request solver index=19 solve_ns=38154475
+request solver index=20 solve_ns=38702527
+request solver index=21 solve_ns=38317417
+request solver index=22 solve_ns=37907862
+request solver index=23 solve_ns=38546425
+request solver index=24 solve_ns=39358492
+upstream verified request wrapper: 1
+upstream timed self-check and serialization: 1

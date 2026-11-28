@@ -1,0 +1,29 @@
+{
+  "cores": [
+    {
+      "cpu": 0,
+      "package": "0",
+      "core": "0"
+    },
+    {
+      "cpu": 1,
+      "package": "0",
+      "core": "0"
+    },
+    {
+      "cpu": 2,
+      "package": "0",
+      "core": "1"
+    },
+    {
+      "cpu": 3,
+      "package": "0",
+      "core": "1"
+    }
+  ],
+  "selected": [
+    0,
+    2
+  ],
+  "load_1m": 0.48046875
+}

@@ -1,0 +1,6 @@
+request solver index=0 solve_ns=58714871
+request solver index=1 solve_ns=69980435
+request solver index=2 solve_ns=54900463
+request solver index=3 solve_ns=54505036
+upstream verified request wrapper: 1
+upstream timed self-check and serialization: 1

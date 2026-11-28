@@ -1,0 +1,145 @@
+{
+  "source_commits": {
+    "upstream": "d126d3cb2a306e7c53d9fc7638dc7860ce086b30",
+    "prepared": "a97a69980835eaba47814d7a3f1831d33eb9d5a7"
+  },
+  "binary_sha256": {
+    "upstream": "5e6216d5139b6136b8f1736c17d04a7a95bf1712d18afdc9a04bca9f54bdacc6",
+    "prepared": "846ebcd5f5bc82912f589559a18bd7cf96ada69e9772effc1576c183d28b3c31"
+  },
+  "manifest_sha256": "0436bedbae33912331d7306b9c1406956be5695d43f85f5c750f19bbb9bcce41",
+  "host": {
+    "platform": "Linux-7.0.0-1020-azure-x86_64-with-glibc2.43",
+    "affinity": [
+      0,
+      2
+    ],
+    "physical_core_ids": [
+      [
+        "0",
+        "0"
+      ],
+      [
+        "0",
+        "1"
+      ]
+    ],
+    "load_1m": 5.0458984375
+  },
+  "workers": 2,
+  "topology_ok": true,
+  "smoke": true,
+  "performance_eligible": false,
+  "controls": [],
+  "control_failures": [],
+  "measurements": [
+    {
+      "tag": "measure-escrow-b1-upstream",
+      "circuit": "escrow",
+      "arm": "upstream",
+      "setup_ns": 339311935,
+      "services_ns": [
+        252119848,
+        239754907,
+        224866243,
+        223839699
+      ],
+      "p50_ns": 232310575.0,
+      "p95_ns": 252119848,
+      "peak_rss_bytes": 81104896,
+      "load_after": 5.0458984375
+    },
+    {
+      "tag": "measure-escrow-b1-prepared",
+      "circuit": "escrow",
+      "arm": "prepared",
+      "setup_ns": 959777964,
+      "services_ns": [
+        171301720,
+        173517580,
+        171452872,
+        171381228
+      ],
+      "p50_ns": 171417050.0,
+      "p95_ns": 173517580,
+      "peak_rss_bytes": 82042880,
+      "load_after": 5.0458984375
+    },
+    {
+      "tag": "measure-withdrawal-b1-upstream",
+      "circuit": "withdrawal",
+      "arm": "upstream",
+      "setup_ns": 238793219,
+      "services_ns": [
+        176277472,
+        171996745,
+        171877292,
+        171714069
+      ],
+      "p50_ns": 171937018.5,
+      "p95_ns": 176277472,
+      "peak_rss_bytes": 57827328,
+      "load_after": 4.7216796875
+    },
+    {
+      "tag": "measure-withdrawal-b1-prepared",
+      "circuit": "withdrawal",
+      "arm": "prepared",
+      "setup_ns": 690423922,
+      "services_ns": [
+        135972902,
+        135575751,
+        135942354,
+        136101511
+      ],
+      "p50_ns": 135957628.0,
+      "p95_ns": 136101511,
+      "peak_rss_bytes": 57774080,
+      "load_after": 4.7216796875
+    }
+  ],
+  "summary": {
+    "escrow": {
+      "arms": {
+        "upstream": {
+          "samples": 4,
+          "warm_p50_ns": 232310575.0,
+          "warm_p95_ns": 252119848,
+          "preparation_ns_median": 339311935,
+          "peak_rss_bytes": 81104896
+        },
+        "prepared": {
+          "samples": 4,
+          "warm_p50_ns": 171417050.0,
+          "warm_p95_ns": 173517580,
+          "preparation_ns_median": 959777964,
+          "peak_rss_bytes": 82042880
+        }
+      },
+      "p50_saved_ns": 60893525.0,
+      "extra_preparation_ns": 620466029,
+      "break_even_requests": null
+    },
+    "withdrawal": {
+      "arms": {
+        "upstream": {
+          "samples": 4,
+          "warm_p50_ns": 171937018.5,
+          "warm_p95_ns": 176277472,
+          "preparation_ns_median": 238793219,
+          "peak_rss_bytes": 57827328
+        },
+        "prepared": {
+          "samples": 4,
+          "warm_p50_ns": 135957628.0,
+          "warm_p95_ns": 136101511,
+          "preparation_ns_median": 690423922,
+          "peak_rss_bytes": 57774080
+        }
+      },
+      "p50_saved_ns": 35979390.5,
+      "extra_preparation_ns": 451630703,
+      "break_even_requests": null
+    }
+  }
+}
