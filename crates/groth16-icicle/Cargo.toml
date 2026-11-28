@@ -9,6 +9,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
+# ICICLE is pinned to an upstream git revision, so this adapter cannot be
+# packaged on crates.io with the current dependency source.
+publish = false
 
 [dependencies]
 xark-groth16 = { path = "../groth16", version = "0.5.0" }
