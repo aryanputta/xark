@@ -92,6 +92,7 @@ jobs:
           print('Physical core selection:', cpus)
           PY
       - name: Build pinned independent executables
+        id: built
         env:
           RUNNER_TEMP: ${{ runner.temp }}
           GITHUB_SHA: ${{ github.sha }}
@@ -176,6 +177,41 @@ jobs:
             --competitor gnark --pairs 4 --samples 30 --warmups 3 --strict-contention
           python3 harness/benches/competitive/gnark_gate.py "$RUNNER_TEMP/gnark-measured" \
             --pairs 4 --samples 30
+      - name: Same-host portable versus ADX BMI2 ABBA
+        if: ${{ always() && steps.built.outcome == 'success' }}
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          python3 harness/benches/competitive/build_xark.py \
+            --source "$PWD/candidate" \
+            --expected-commit 7d82e00b6343df1bb9f13073999f7b33b73ef7d3 \
+            --target-dir "$RUNNER_TEMP/xark-portable-target"
+          mkdir -p "$RUNNER_TEMP/xark-modes"
+          cp "$RUNNER_TEMP/xark-portable-target/xark-build-manifest.json" \
+            "$RUNNER_TEMP/xark-modes/portable-build-manifest.json"
+          cp "$RUNNER_TEMP/xark-target/xark-build-manifest.json" \
+            "$RUNNER_TEMP/xark-modes/tuned-build-manifest.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          temp = Path(os.environ['RUNNER_TEMP'])
+          config = json.loads((temp / 'gnark-run.json').read_text())
+          for mode, target in (('portable', 'xark-portable-target'), ('tuned', 'xark-target')):
+              config['binaries']['bench'] = str(temp / target / 'release/examples/bench_prove')
+              config['xark_build_manifest'] = str(temp / target / 'xark-build-manifest.json')
+              (temp / 'xark-modes' / f'{mode}.json').write_text(json.dumps(config, indent=2) + '\n')
+          PY
+          cpus=$(cat "$RUNNER_TEMP/cpu-pair.txt")
+          for name in portable-a tuned-a tuned-b portable-b; do
+            mode=${name%-*}
+            taskset -c "$cpus" python3 harness/benches/competitive/run.py \
+              --config "$RUNNER_TEMP/xark-modes/$mode.json" \
+              --output "$RUNNER_TEMP/xark-modes/$name" \
+              --competitor xark --pairs 2 --samples 30 --warmups 3 --strict-contention
+          done
+          python3 harness/benches/competitive/xark_modes_gate.py "$RUNNER_TEMP/xark-modes" \
+            --samples 30
       - name: Keep complete receipts, including failed controls
         if: always()
         uses: actions/upload-artifact@v4
@@ -193,5 +229,9 @@ jobs:
             ${{ runner.temp }}/gnark-smoke/**
             ${{ runner.temp }}/gnark-control/**
             ${{ runner.temp }}/gnark-measured/**
+            ${{ runner.temp }}/xark-portable-target/xark-build-manifest.json
+            ${{ runner.temp }}/xark-portable-target/build.stdout
+            ${{ runner.temp }}/xark-portable-target/build.stderr
+            ${{ runner.temp }}/xark-modes/**
           if-no-files-found: warn
           retention-days: 30

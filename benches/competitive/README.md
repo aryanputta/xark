@@ -139,6 +139,16 @@ default CPU artifact or a change to the PR #106 production API. The prior
 passed the control cohort but failed the measured cohort's frozen host gate,
 so it has no accepted competitor speed percentage.
 
+The same hosted job also runs a separate portable/tuned Xark ABBA build-mode
+comparison on the same two physical cores. It builds both variants from the
+same benchmark-only #106 descendant in isolated Cargo targets and checks
+every proof and changed statement. `xark_modes_gate.py` independently parses
+the four raw receipts (480 samples total), verifies source/fixture/binary
+identity and build flags, and requires each binary's four process medians to
+stay within 2% p50 and 10% p95 before reporting a tuned-build p50 change.
+This result tests the opt-in compiler flag on this source; it is separate from
+the Gnark comparison and the full request API speedup in #106.
+
 ```sh
 python3 benches/competitive/run.py --config /path/to/run.json \
   --output /path/to/control --competitor gnark --pairs 2 --samples 32 \
