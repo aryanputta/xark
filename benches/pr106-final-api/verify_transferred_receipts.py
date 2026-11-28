@@ -30,8 +30,8 @@ def verify(root, label):
             raise ValueError(f"{label}: unexpected file type {path}")
         if SENSITIVE.search(path.read_bytes()):
             raise ValueError(f"{label}: sensitive-looking content in {path}")
-    reports = [json.loads(path.read_text()) for path in root.rglob("report.json")]
-    selected = [report for report in reports if not report.get("smoke", False)]
+    reports = [(path, json.loads(path.read_text())) for path in root.rglob("report.json")]
+    selected = [report for _, report in reports if not report.get("smoke", False)]
     if len(selected) != 1:
         raise ValueError(f"{label}: expected one non-smoke report")
     report = selected[0]
@@ -45,12 +45,12 @@ def verify(root, label):
     elif report["source_commits"]["guarded"] != expected["source"]:
         raise ValueError(f"{label}: guarded source head changed")
     checked = 0
-    for report in reports:
+    for path, report in reports:
         for row in report["controls"] + report["measurements"]:
-            matches = list(root.rglob(row["tag"] + ".stdout"))
-            if len(matches) != 1:
-                raise ValueError(f"{label}: missing unique stdout for {row['tag']}")
-            setup, samples = parse(matches[0].read_text().splitlines(), len(row["services_ns"]), 2)
+            stdout = path.parent / (row["tag"] + ".stdout")
+            if not stdout.is_file():
+                raise ValueError(f"{label}: missing stdout for {row['tag']}")
+            setup, samples = parse(stdout.read_text().splitlines(), len(row["services_ns"]), 2)
             if setup != row["setup_ns"] or samples != row["services_ns"]:
                 raise ValueError(f"{label}: raw samples differ for {row['tag']}")
             if statistics.median(samples) != row["p50_ns"] or p95(samples) != row["p95_ns"]:

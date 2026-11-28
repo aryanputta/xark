@@ -35,7 +35,7 @@ jobs:
           run-id: 46124920790
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: benches/pr106-final-api/evidence/raw/cleanup-ablation
-      - name: Independently reparse and screen raw files
+      - name: Reparse each invocation and screen raw files
         run: |
           python3 benches/pr106-final-api/verify_transferred_receipts.py \
             benches/pr106-final-api/evidence/raw
