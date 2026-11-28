@@ -1,0 +1,40 @@
+name: PR106 replay host topology
+
+on:
+  push:
+    branches: [bench/pr106-final-head-linux]
+  workflow_dispatch:
+
+jobs:
+  topology:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record CPU topology
+        run: |
+          lscpu -e=CPU,CORE,SOCKET,ONLINE > lscpu-topology.txt
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          affinity = sorted(os.sched_getaffinity(0))
+          cores = []
+          for cpu in affinity:
+              base = Path(f'/sys/devices/system/cpu/cpu{cpu}/topology')
+              cores.append({'cpu': cpu,
+                            'package': (base / 'physical_package_id').read_text().strip(),
+                            'core': (base / 'core_id').read_text().strip()})
+          distinct = {(row['package'], row['core']) for row in cores}
+          result = {'affinity': affinity, 'cores': cores,
+                    'distinct_physical_cores': len(distinct),
+                    'two_physical_cores_available': len(distinct) >= 2,
+                    'load_1m': os.getloadavg()[0]}
+          Path('topology.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr106-topology
+          path: |
+            topology.json
+            lscpu-topology.txt
