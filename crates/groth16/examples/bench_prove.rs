@@ -2,21 +2,51 @@
 //! peak-heap-tracking allocator so every phase reports its own high-water mark.
 //!
 //! ```text
+//! bench_prove counts <circuit.xbc>                         # inspect before generating keys
+//! bench_prove check-witness <circuit.xbc> <statement-dir> # check the solved public input
+//! bench_prove export-iden3 <circuit.xbc> <statement-dir> <new-directory>
 //! bench_prove setup-reduced <circuit.xbc> <out pk.bin>     # key the template-reduced circuit
 //! bench_prove ark    <circuit.xbc> <pk.bin> <inputs.json> [--reduced]
 //! bench_prove stream <circuit.xbc> <pk.bin> <inputs.json> [--source xbc|min] [--tile N] [--chunk N]
+//! BENCH_TIME=1 bench_prove warm <circuit.xbc> <reduced pk.bin> <inputs.json> [proofs] [warmups]
+//! BENCH_TIME=1 bench_prove query-msm <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
+//! BENCH_TIME=1 bench_prove query-msm-xark <circuit.xbc> <reduced pk.bin> <statement-dir> [samples] [warmups]
+//! bench_prove query-msm-export <circuit.xbc> <reduced pk.bin> <statement-dir> <new-output-file>
 //! ```
 //! `--reduced` / `--source xbc` prove the template-reduced circuit (key from
 //! `setup-reduced`); otherwise the boundary-minimized circuit `xark setup` keys.
+//! `warm` also uses a key from `setup-reduced`. It times resident prover adapter
+//! calls with witness solving and independent verification outside the samples.
+//! For a controlled CPU comparison, set `BENCH_MERGE_BELOW=0` to disable merging.
+//! Set `BENCH_WARM_BACKEND=cpu` to time Xark alone while still checking each
+//! proof with Arkworks. The default times both prover adapters.
+//! `BENCH_CHECK_ROWS=1` includes witness row checks in warm timing for Gnark.
+//! `BENCH_CHECK_ROWS=expanded` checks by expanding rows and leaves the prover's
+//! row evaluator unchanged. Both print the check duration after verification.
+//! For split resident CPU proofs, `BENCH_RESIDENT_PROFILE=1` records task spans.
+//! Use it with `BENCH_TIME=1 BENCH_WARM_BACKEND=cpu` and an SDK statement directory.
+//! For either Privacy Rings timelock fixture, set `BENCH_PUBLIC_STATEMENTS` to
+//! the directory containing `public.json` and `public-changed.json`.
+//! `query-msm` takes that directory as an argument and times the decoded B1
+//! and B2 queries in isolation. It alternates backend order and checks every
+//! group result against Arkworks before reporting timings. Use
+//! `RAYON_NUM_THREADS` to set the shared worker budget and `NO_GLV=1` to
+//! disable GLV for Xark's query benchmark.
+//! `query-msm-xark` times Xark's B1 and B2 queries in separate batches and
+//! checks each result against precomputed Arkworks references.
+//! `query-msm-export` writes both ordered queries, the witness scalars, and
+//! Arkworks reference sums for a same-input benchmark. Use reproducible test
+//! fixtures and keep the witness-bearing export in local scratch storage.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ark_bn254::{Bn254, Fr};
 use ark_groth16::Groth16;
-use ark_serialize::{CanonicalSerialize, Compress};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress};
 use ark_snark::SNARK;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -31,6 +61,10 @@ use xark_prover::XarkCircuit;
 mod ark;
 #[path = "../tests/support/arkworks_prover.rs"]
 mod arkworks_prover;
+#[path = "support/iden3.rs"]
+mod iden3;
+#[path = "support/query_msm.rs"]
+mod query_msm;
 use ark::{ArkCircuit, convert};
 use arkworks_prover::Arkworks;
 
@@ -163,6 +197,62 @@ impl Probe for Phases {
     }
 }
 
+struct TimedProof<'a>(&'a xark_groth16::prover::ResidentTimingSink<'a>);
+
+impl Probe for TimedProof<'_> {
+    fn resident_timings(&self) -> Option<&xark_groth16::prover::ResidentTimingSink<'_>> {
+        Some(self.0)
+    }
+}
+
+struct TaskSpan {
+    phase: &'static str,
+    offset: Duration,
+    elapsed: Duration,
+}
+
+struct ProfiledCpu<'a, P> {
+    cpu: Cpu<P>,
+    profiles: &'a mut Vec<Vec<TaskSpan>>,
+}
+
+impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
+    fn name(&self) -> &str {
+        self.cpu.name()
+    }
+
+    fn prove(
+        &mut self,
+        src: &dyn ConstraintSource,
+        z: &[Fr],
+        r: Fr,
+        s: Fr,
+    ) -> Result<xark_groth16::Proof<Bn254>, xark_groth16::ProveError> {
+        let spans = Mutex::new(Vec::new());
+        let origin = Instant::now();
+        let record = |phase, started: Instant, elapsed| {
+            spans.lock().unwrap().push(TaskSpan {
+                phase,
+                offset: started.duration_since(origin),
+                elapsed,
+            });
+        };
+        let proof = xark_groth16::prove_with_randomness(
+            src,
+            z,
+            &mut self.cpu.pk,
+            r,
+            s,
+            &self.cpu.cfg,
+            &mut TimedProof(&record),
+        )?;
+        let mut spans = spans.into_inner().unwrap();
+        spans.sort_unstable_by_key(|event| event.offset);
+        self.profiles.push(spans);
+        Ok(proof)
+    }
+}
+
 fn arg_val(args: &[String], k: &str) -> Option<String> {
     args.iter()
         .position(|a| a == k)
@@ -191,6 +281,37 @@ fn reduced(xbc: &[u8]) -> xark_ir::R1csProgram {
         .into_r1cs()
 }
 
+fn public_hash(path: &std::path::Path) -> Fr {
+    let bytes = std::fs::read(path).expect("read public statement");
+    let statement: BTreeMap<String, String> =
+        serde_json::from_slice(&bytes).expect("decode public statement");
+    assert_eq!(statement.len(), 1, "expected one public input");
+    statement
+        .get("public_hash")
+        .expect("statement must contain public_hash")
+        .parse()
+        .expect("parse public_hash as a field element")
+}
+
+fn check_statements(directory: &std::path::Path, actual: &[Fr]) -> Fr {
+    let expected = public_hash(&directory.join("public.json"));
+    let changed = public_hash(&directory.join("public-changed.json"));
+    assert!(
+        actual == [expected],
+        "witness public input does not match the fixture statement"
+    );
+    assert!(expected != changed, "changed statement must differ");
+    changed
+}
+
+fn checked_arkworks_encoding<A: CanonicalSerialize, B: CanonicalDeserialize>(value: &A) -> B {
+    let mut bytes = Vec::new();
+    value
+        .serialize_compressed(&mut bytes)
+        .expect("serialize benchmark artifact");
+    B::deserialize_compressed(bytes.as_slice()).expect("validate Arkworks benchmark artifact")
+}
+
 fn main() {
     // Must be decided before any allocation is tracked (CUR would underflow if
     // tracking switched off/on mid-run).
@@ -202,21 +323,36 @@ fn main() {
     }
     let args: Vec<String> = std::env::args().collect();
     let mode = args[1].as_str();
+    match mode {
+        "query-msm" | "query-msm-xark" => {
+            query_msm::run(&args[2..], mode == "query-msm-xark");
+            return;
+        }
+        "query-msm-export" => {
+            query_msm::export(&args[2..]);
+            return;
+        }
+        _ => {}
+    }
     let xbc = std::fs::read(&args[2]).unwrap();
-    let pk_path = std::path::PathBuf::from(&args[3]);
-
-    if mode == "setup-reduced" {
-        let prog = reduced(&xbc);
-        eprintln!("reduced circuit: {} constraints", prog.constraints.len());
-        let circ = XarkCircuit::for_setup_preminimized(prog);
-        let (pk, _) = Groth16::<Bn254>::circuit_specific_setup(
-            ArkCircuit::of(&circ),
-            &mut ChaCha20Rng::seed_from_u64(7),
-        )
-        .unwrap();
-        let mut buf = b"XKPK\x01\x00".to_vec();
-        pk.serialize_with_mode(&mut buf, Compress::Yes).unwrap();
-        std::fs::write(&pk_path, buf).unwrap();
+    if mode == "check-witness" || mode == "export-iden3" {
+        let directory = std::path::Path::new(&args[3]);
+        let inputs = directory.join("inputs.json");
+        let assign = solve(&xbc, inputs.to_str().expect("UTF-8 input file path"));
+        let src = BytecodeSource::new(&xbc).unwrap();
+        let z = src.layout().assignment_from_map(&assign);
+        check_statements(directory, &z[1..src.layout().num_instance()]);
+        if mode == "export-iden3" {
+            iden3::write(std::path::Path::new(&args[4]), &src, &z)
+                .expect("export the reduced circuit and witness");
+            println!(
+                "exported reduced iden3 circuit: {} rows, {} wires, {} public inputs",
+                src.num_constraints(),
+                src.layout().num_vars(),
+                src.layout().num_instance() - 1
+            );
+        }
+        println!("fixture witness matches public statement");
         return;
     }
     if mode == "counts" {
@@ -242,7 +378,22 @@ fn main() {
         );
         return;
     }
+    let pk_path = std::path::PathBuf::from(&args[3]);
 
+    if mode == "setup-reduced" {
+        let prog = reduced(&xbc);
+        eprintln!("reduced circuit: {} constraints", prog.constraints.len());
+        let circ = XarkCircuit::for_setup_preminimized(prog);
+        let (pk, _) = Groth16::<Bn254>::circuit_specific_setup(
+            ArkCircuit::of(&circ),
+            &mut ChaCha20Rng::seed_from_u64(7),
+        )
+        .unwrap();
+        let mut buf = b"XKPK\x01\x00".to_vec();
+        pk.serialize_with_mode(&mut buf, Compress::Yes).unwrap();
+        std::fs::write(&pk_path, buf).unwrap();
+        return;
+    }
     if mode == "rows" {
         // ⟨A_i,z⟩, ⟨B_i,z⟩, ⟨C_i,z⟩ for every row: compiled templates vs expansion.
         let assign = solve(&xbc, &args[4]);
@@ -321,45 +472,196 @@ fn main() {
     }
     if mode == "warm" {
         // Key already resident (prove-many server): prove time only, every prover,
-        // a line a proof: `warm <xbc> <pk> <inputs> [proofs, 3 by default]`.
-        let runs: u64 = args
+        // a line a proof: `warm <xbc> <pk> <inputs> [proofs] [warmups]`.
+        let runs: usize = args
             .get(5)
-            .map_or(3, |n| n.parse().expect("a number of proofs"));
+            .map_or(30, |n| n.parse().expect("a number of proofs"));
+        let warmups: usize = args
+            .get(6)
+            .map_or(3, |n| n.parse().expect("a number of warmups"));
+        assert!(runs > 0, "warm mode requires at least one measured proof");
         let assign = solve(&xbc, &args[4]);
         let pk = xark_backend::Groth16Keys::read_proving_key(&pk_path).unwrap();
         let src = BytecodeSource::new(&xbc).unwrap();
         let z = src.layout().assignment_from_map(&assign);
-        let mut provers: Vec<Box<dyn Prover + '_>> = vec![
-            Box::new(Arkworks::new(&pk)),
-            Box::new(Cpu::new(
-                xark_groth16::InMemoryPk::new(&pk),
-                ProverConfig::default(),
-            )),
-        ];
+        let public = &z[1..src.layout().num_instance()];
+        assert_eq!(
+            pk.vk.gamma_abc_g1.len(),
+            public.len() + 1,
+            "verifying key and circuit have different public input counts"
+        );
+        let changed_public_hash = std::env::var_os("BENCH_PUBLIC_STATEMENTS")
+            .or_else(|| std::env::var_os("BENCH_ESCROW_STATEMENTS"))
+            .map(|directory| check_statements(std::path::Path::new(&directory), public));
+        let vk: ark_groth16::VerifyingKey<Bn254> = checked_arkworks_encoding(&pk.vk);
+        let prepared_vk = Groth16::<Bn254>::process_vk(&vk).expect("prepare Arkworks key");
+        let mut cfg = ProverConfig::default();
+        if let Some(value) = std::env::var_os("BENCH_MERGE_BELOW") {
+            cfg.merge_below = value
+                .to_str()
+                .and_then(|value| value.parse().ok())
+                .expect("BENCH_MERGE_BELOW must be a nonnegative integer");
+        }
+        let profile = std::env::var_os("BENCH_RESIDENT_PROFILE").is_some();
+        if profile {
+            assert!(!tracking(), "set BENCH_TIME=1 for resident task timing");
+            assert_eq!(std::env::var("BENCH_WARM_BACKEND").as_deref(), Ok("cpu"));
+            assert!(
+                pk.a_query.len() >= cfg.merge_below,
+                "resident task timing uses split MSMs"
+            );
+            assert!(
+                changed_public_hash.is_some(),
+                "resident task timing needs the SDK statements"
+            );
+        }
+        let mut profiles = Vec::new();
+        let mut provers: Vec<Box<dyn Prover + '_>> = Vec::new();
+        match std::env::var("BENCH_WARM_BACKEND").as_deref() {
+            Ok("both") | Err(std::env::VarError::NotPresent) => {
+                provers.push(Box::new(Arkworks::new(&pk)));
+            }
+            Ok("cpu") => {}
+            _ => panic!("BENCH_WARM_BACKEND must be both or cpu"),
+        }
+        eprintln!(
+            "resident CPU: a_query_len={} merge_below={} merged={}",
+            pk.a_query.len(),
+            cfg.merge_below,
+            pk.a_query.len() < cfg.merge_below
+        );
+        let cpu = Cpu::new(xark_groth16::InMemoryPk::new(&pk), cfg);
+        if profile {
+            provers.push(Box::new(ProfiledCpu {
+                cpu,
+                profiles: &mut profiles,
+            }));
+        } else {
+            provers.push(Box::new(cpu));
+        }
         // Each prover's proofs back to back, as a prove-many server makes them
         // (and as gnark's benchmark times its own), not one interleaved with the
         // other's: a millisecond proof right after an arkworks one measures the
         // arkworks proof's cache and pool aftermath too.
-        let times: Vec<Vec<f64>> = provers
+        let mut rng = rand::thread_rng();
+        let row_check = std::env::var_os("BENCH_CHECK_ROWS");
+        let expanded_check = row_check.as_deref() == Some(std::ffi::OsStr::new("expanded"));
+        let check_src = expanded_check.then(|| {
+            let mut expanded = BytecodeSource::new(&xbc).expect("read rows to check");
+            expanded.set_compiled(false);
+            expanded
+        });
+        let check_rows = row_check.is_some();
+        let check_witness = || {
+            if check_rows {
+                assert!(
+                    xark_groth16::r1cs::first_unsatisfied(check_src.as_ref().unwrap_or(&src), &z)
+                        .is_none(),
+                    "the supplied witness fails a constraint"
+                );
+            }
+        };
+        eprintln!("resident includes row checks: {check_rows}");
+        if check_rows {
+            eprintln!(
+                "witness row checker: {}",
+                if expanded_check {
+                    "expanded"
+                } else {
+                    "compiled"
+                }
+            );
+        }
+        let samples: Vec<_> = provers
             .iter_mut()
             .map(|p| {
+                for _ in 0..warmups {
+                    check_witness();
+                    prove_with_rng(&mut **p, &src, &z, &mut rng).expect("warm up prover");
+                }
                 (0..runs)
-                    .map(|i| {
+                    .map(|_| {
                         let t = Instant::now();
-                        prove_with_rng(&mut **p, &src, &z, &mut ChaCha20Rng::seed_from_u64(i))
-                            .unwrap();
-                        t.elapsed().as_secs_f64()
+                        check_witness();
+                        let checked_in = check_rows.then(|| t.elapsed());
+                        let proof =
+                            prove_with_rng(&mut **p, &src, &z, &mut rng).expect("measure proof");
+                        (t.elapsed().as_secs_f64(), proof, checked_in)
                     })
-                    .collect()
+                    .collect::<Vec<_>>()
             })
             .collect();
-        for i in 0..runs as usize {
+        // Verify after all timed batches so pairings cannot affect the samples.
+        // Reject the batch before printing any timings if any proof fails.
+        for (prover, batch) in provers.iter().zip(&samples) {
+            for (index, (_, proof, _)) in batch.iter().enumerate() {
+                let ark_proof: ark_groth16::Proof<Bn254> = checked_arkworks_encoding(proof);
+                let ark_valid =
+                    Groth16::<Bn254>::verify_with_processed_vk(&prepared_vk, public, &ark_proof)
+                        .expect("verify measured proof with Arkworks");
+                let xark_valid = xark_groth16::verify(&pk.vk, public, proof)
+                    .expect("verify measured proof with Xark");
+                assert!(
+                    ark_valid && xark_valid,
+                    "{} proof {} failed verification (Arkworks={ark_valid}, Xark={xark_valid})",
+                    prover.name(),
+                    index + 1
+                );
+                if let Some(changed) = changed_public_hash.as_ref().filter(|_| index == 0) {
+                    let changed = std::slice::from_ref(changed);
+                    let ark_accepts = Groth16::<Bn254>::verify_with_processed_vk(
+                        &prepared_vk,
+                        changed,
+                        &ark_proof,
+                    )
+                    .expect("verify changed statement with Arkworks");
+                    let xark_accepts = xark_groth16::verify(&pk.vk, changed, proof)
+                        .expect("verify changed statement with Xark");
+                    assert!(
+                        !ark_accepts && !xark_accepts,
+                        "{} proof accepted under changed statement (Arkworks={ark_accepts}, Xark={xark_accepts})",
+                        prover.name()
+                    );
+                }
+            }
+        }
+        if changed_public_hash.is_some() {
+            println!("changed statement rejected by Arkworks and Xark for each backend");
+        }
+        for i in 0..runs {
             let line: Vec<String> = provers
                 .iter()
-                .zip(&times)
-                .map(|(p, t)| format!("{} {:.6}s", p.name(), t[i]))
+                .zip(&samples)
+                .map(|(p, batch)| format!("{} {:.6}s", p.name(), batch[i].0))
                 .collect();
             println!("warm prove: {}", line.join("  "));
+        }
+        for (prover, batch) in provers.iter().zip(&samples) {
+            for (_, _, checked_in) in batch {
+                if let Some(elapsed) = checked_in {
+                    println!(
+                        "warm row check: {} {} ns",
+                        prover.name(),
+                        elapsed.as_nanos()
+                    );
+                }
+            }
+        }
+        drop(provers);
+        if profile {
+            assert_eq!(profiles.len(), warmups + runs);
+            for (sample, spans) in profiles.iter().skip(warmups).enumerate() {
+                assert!(!spans.is_empty(), "split resident timing produced no spans");
+                for span in spans {
+                    println!(
+                        "resident task: {} {} {} {}",
+                        sample + 1,
+                        span.phase,
+                        span.offset.as_nanos(),
+                        span.elapsed.as_nanos()
+                    );
+                }
+            }
         }
         return;
     }
