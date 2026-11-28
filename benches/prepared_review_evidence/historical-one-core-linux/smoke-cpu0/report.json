@@ -1,0 +1,286 @@
+{
+  "source_branch": "bench/prepared-solver-soundness-phase",
+  "source_commit": "c2a3922480b1d60b285f065c941bd1dbf84b8cdd",
+  "binary_sha256": "2730c6f64cc887b6f81afe188580a827b77d67740a95dcfae88e0d1dbf6b3254",
+  "manifest_sha256": "0436bedbae33912331d7306b9c1406956be5695d43f85f5c750f19bbb9bcce41",
+  "host": {
+    "platform": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "python": "3.13.18",
+    "cpu_model": "Intel(R) Xeon(R) CPU @ 2.20GHz",
+    "affinity": [
+      0
+    ],
+    "physical_core_ids": [
+      [
+        "0",
+        "0"
+      ]
+    ],
+    "load_1m": 1.1142578125
+  },
+  "workers": 1,
+  "concurrency": 1,
+  "requests_per_run": 4,
+  "control_requests_per_run": 32,
+  "blocks": 4,
+  "smoke": true,
+  "performance_eligible": false,
+  "host_control_failures": [],
+  "control": [],
+  "measurements": [
+    {
+      "circuit": "escrow",
+      "phase": "measure",
+      "block": 1,
+      "arm": "audit",
+      "position": "measure-escrow-b1-audit",
+      "count": 4,
+      "service_p50_ns": 703561366.0,
+      "service_p95_ns": 706339395,
+      "solver_ns": [
+        134075039,
+        130288718,
+        149682228,
+        130551334
+      ],
+      "peak_rss_bytes": 73261056,
+      "process_ns": 5398462782,
+      "load_before": [
+        1.1142578125,
+        1.6982421875,
+        1.06884765625
+      ],
+      "load_after": [
+        1.265625,
+        1.72021484375,
+        1.07958984375
+      ],
+      "setup_ns": 1737602652,
+      "waves": [
+        {
+          "wall_ns": 702434166,
+          "overlap": false
+        },
+        {
+          "wall_ns": 683437436,
+          "overlap": false
+        },
+        {
+          "wall_ns": 706343835,
+          "overlap": false
+        },
+        {
+          "wall_ns": 704699467,
+          "overlap": false
+        }
+      ],
+      "services_ns": [
+        702429415,
+        683433063,
+        706339395,
+        704693317
+      ],
+      "active_proofs_per_second": 1.4301471933520076,
+      "service_median_ns": 703561366.0,
+      "overlapped_waves": 0
+    },
+    {
+      "circuit": "escrow",
+      "phase": "measure",
+      "block": 1,
+      "arm": "satisfied",
+      "position": "measure-escrow-b1-satisfied",
+      "count": 4,
+      "service_p50_ns": 590961840.5,
+      "service_p95_ns": 593449601,
+      "solver_ns": [
+        37475365,
+        21937809,
+        22623103,
+        23830590
+      ],
+      "peak_rss_bytes": 72134656,
+      "process_ns": 4207362204,
+      "load_before": [
+        1.265625,
+        1.72021484375,
+        1.07958984375
+      ],
+      "load_after": [
+        1.244140625,
+        1.7080078125,
+        1.0791015625
+      ],
+      "setup_ns": 1113726863,
+      "waves": [
+        {
+          "wall_ns": 593455046,
+          "overlap": false
+        },
+        {
+          "wall_ns": 589087227,
+          "overlap": false
+        },
+        {
+          "wall_ns": 573740634,
+          "overlap": false
+        },
+        {
+          "wall_ns": 592845625,
+          "overlap": false
+        }
+      ],
+      "services_ns": [
+        593449601,
+        589082180,
+        573736185,
+        592841501
+      ],
+      "active_proofs_per_second": 1.7027591064140206,
+      "service_median_ns": 590961840.5,
+      "overlapped_waves": 0
+    },
+    {
+      "circuit": "withdrawal",
+      "phase": "measure",
+      "block": 1,
+      "arm": "audit",
+      "position": "measure-withdrawal-b1-audit",
+      "count": 4,
+      "service_p50_ns": 942781743.5,
+      "service_p95_ns": 976888414,
+      "solver_ns": [
+        93127252,
+        165887911,
+        169913889,
+        167822926
+      ],
+      "peak_rss_bytes": 52150272,
+      "process_ns": 5092222242,
+      "load_before": [
+        1.244140625,
+        1.7080078125,
+        1.0791015625
+      ],
+      "load_after": [
+        1.3046875,
+        1.712890625,
+        1.08447265625
+      ],
+      "setup_ns": 824010217,
+      "waves": [
+        {
+          "wall_ns": 667316532,
+          "overlap": false
+        },
+        {
+          "wall_ns": 965355758,
+          "overlap": false
+        },
+        {
+          "wall_ns": 976893767,
+          "overlap": false
+        },
+        {
+          "wall_ns": 920219314,
+          "overlap": false
+        }
+      ],
+      "services_ns": [
+        667312013,
+        965349713,
+        976888414,
+        920213774
+      ],
+      "active_proofs_per_second": 1.1332133768991135,
+      "service_median_ns": 942781743.5,
+      "overlapped_waves": 0
+    },
+    {
+      "circuit": "withdrawal",
+      "phase": "measure",
+      "block": 1,
+      "arm": "satisfied",
+      "position": "measure-withdrawal-b1-satisfied",
+      "count": 4,
+      "service_p50_ns": 477458455.0,
+      "service_p95_ns": 489589224,
+      "solver_ns": [
+        16097224,
+        16091563,
+        16082638,
+        15831258
+      ],
+      "peak_rss_bytes": 51232768,
+      "process_ns": 3694441450,
+      "load_before": [
+        1.3046875,
+        1.712890625,
+        1.08447265625
+      ],
+      "load_after": [
+        1.2802734375,
+        1.70068359375,
+        1.083984375
+      ],
+      "setup_ns": 1176956179,
+      "waves": [
+        {
+          "wall_ns": 483301234,
+          "overlap": false
+        },
+        {
+          "wall_ns": 469953080,
+          "overlap": false
+        },
+        {
+          "wall_ns": 489594569,
+          "overlap": false
+        },
+        {
+          "wall_ns": 471624135,
+          "overlap": false
+        }
+      ],
+      "services_ns": [
+        483296768,
+        469947603,
+        489589224,
+        471620142
+      ],
+      "active_proofs_per_second": 2.0893478061021176,
+      "service_median_ns": 477458455.0,
+      "overlapped_waves": 0
+    }
+  ],
+  "summary": {
+    "escrow/audit": {
+      "samples": 4,
+      "p50_ns": 703561366.0,
+      "p95_ns": 706339395,
+      "active_proofs_per_second": 1.4301471933520076,
+      "peak_rss_bytes": 73261056
+    },
+    "escrow/satisfied": {
+      "samples": 4,
+      "p50_ns": 590961840.5,
+      "p95_ns": 593449601,
+      "active_proofs_per_second": 1.7027591064140206,
+      "peak_rss_bytes": 72134656
+    },
+    "withdrawal/audit": {
+      "samples": 4,
+      "p50_ns": 942781743.5,
+      "p95_ns": 976888414,
+      "active_proofs_per_second": 1.1332133768991135,
+      "peak_rss_bytes": 52150272
+    },
+    "withdrawal/satisfied": {
+      "samples": 4,
+      "p50_ns": 477458455.0,
+      "p95_ns": 489589224,
+      "active_proofs_per_second": 2.0893478061021176,
+      "peak_rss_bytes": 51232768
+    }
+  }
+}

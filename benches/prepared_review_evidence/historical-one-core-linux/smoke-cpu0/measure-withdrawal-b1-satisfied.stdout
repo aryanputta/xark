@@ -1,0 +1,9 @@
+request wave first=0 count=1 active_ns=483301234
+request verified index=0 fixture=0 service_ns=483296768
+request wave first=1 count=1 active_ns=469953080
+request verified index=1 fixture=1 service_ns=469947603
+request wave first=2 count=1 active_ns=489594569
+request verified index=2 fixture=2 service_ns=489589224
+request wave first=3 count=1 active_ns=471624135
+request verified index=3 fixture=3 service_ns=471620142
+requests verified mode=cpu concurrency=1 threads=1 count=4 setup_ns=1176956179 altered=rejected cross_request=rejected

@@ -1,0 +1,6 @@
+request solver index=0 solve_ns=37475365
+request solver index=1 solve_ns=21937809
+request solver index=2 solve_ns=22623103
+request solver index=3 solve_ns=23830590
+prepared stream solver: 1
+prepared satisfaction-only: 1
