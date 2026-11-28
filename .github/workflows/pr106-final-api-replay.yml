@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: aryanputta/xark
-          ref: 913825b
+          ref: 913825bb3a520bd248ff5d3b398b705c585f5cd7
           path: evidence
       - uses: dtolnay/rust-toolchain@stable
       - name: Select distinct physical cores and verify fixtures
