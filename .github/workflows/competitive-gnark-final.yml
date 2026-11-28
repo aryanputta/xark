@@ -20,7 +20,7 @@ jobs:
       - name: Check out final PR 106 with benchmark-only export adapter
         uses: actions/checkout@v4
         with:
-          ref: ae50460ea20b6215b0e4ebbfe306b1d9d5762547
+          ref: 7d82e00b6343df1bb9f13073999f7b33b73ef7d3
           path: candidate
           persist-credentials: false
       - name: Check out public fixture evidence
@@ -98,7 +98,7 @@ jobs:
         run: |
           python3 harness/benches/competitive/build_xark.py \
             --source "$PWD/candidate" \
-            --expected-commit ae50460ea20b6215b0e4ebbfe306b1d9d5762547 \
+            --expected-commit 7d82e00b6343df1bb9f13073999f7b33b73ef7d3 \
             --target-dir "$RUNNER_TEMP/xark-target"
           python3 harness/benches/competitive/build_gnark.py \
             --source "$PWD/harness" --expected-commit "$GITHUB_SHA" \
@@ -118,7 +118,7 @@ jobs:
               'version': 2,
               'fixtures': str(temp / 'fixtures'),
               'sources': {
-                  'xark': {'path': str(root / 'candidate'), 'commit': 'ae50460ea20b6215b0e4ebbfe306b1d9d5762547'},
+                  'xark': {'path': str(root / 'candidate'), 'commit': '7d82e00b6343df1bb9f13073999f7b33b73ef7d3'},
                   'gnark': {'path': str(root / 'harness'), 'commit': os.environ['GITHUB_SHA']},
               },
               'binaries': {

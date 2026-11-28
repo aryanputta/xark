@@ -126,10 +126,11 @@ Retain failed-control receipts. This lane times resident row checks and proving
 on an exported identical relation and witness; it is distinct from the
 `PreparedCpuProver::prove` full request interval in PR #106.
 The hosted replay builds Xark from benchmark-only commit
-[`ae50460e`](https://github.com/aryanputta/xark/commit/ae50460ea20b6215b0e4ebbfe306b1d9d5762547),
-which has exact PR #106 head `5cadc60e` as its parent and ports the resident
+[`7d82e00b`](https://github.com/aryanputta/xark/commit/7d82e00b6343df1bb9f13073999f7b33b73ef7d3),
+which descends from exact PR #106 head `5cadc60e` and ports the resident
 proof export example needed for this lane. Its extra changes are confined to
-the benchmark example and support files; they are not in PR #106.
+the benchmark example and support files; they are not in PR #106. The port
+omits the older task profiling hook absent from #106's prover API.
 
 ```sh
 python3 benches/competitive/run.py --config /path/to/run.json \
