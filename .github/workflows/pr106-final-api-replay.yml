@@ -1,0 +1,87 @@
+name: PR106 final API Linux replay
+
+on:
+  push:
+    branches: [bench/pr106-final-head-linux]
+  workflow_dispatch:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: aryanputta/xark
+          ref: d126d3cb2a306e7c53d9fc7638dc7860ce086b30
+          path: upstream
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: aryanputta/xark
+          ref: 913825b
+          path: evidence
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Select distinct physical cores and verify fixtures
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          selected = {}
+          rows = []
+          for cpu in sorted(os.sched_getaffinity(0)):
+              base = Path(f'/sys/devices/system/cpu/cpu{cpu}/topology')
+              key = ((base / 'physical_package_id').read_text().strip(),
+                     (base / 'core_id').read_text().strip())
+              selected.setdefault(key, cpu)
+              rows.append({'cpu': cpu, 'package': key[0], 'core': key[1]})
+          if len(selected) < 2:
+              raise SystemExit('two distinct physical cores unavailable')
+          pair = list(selected.values())[:2]
+          Path('cpu-pair.txt').write_text(','.join(map(str, pair)) + '\n')
+          Path('topology.json').write_text(json.dumps({'cores': rows, 'selected': pair,
+                                                        'load_1m': os.getloadavg()[0]}, indent=2) + '\n')
+          print(f'selected physical-core CPUs: {pair}')
+          PY
+          echo "PINNED_CPUS=$(cat cpu-pair.txt)" >> "$GITHUB_ENV"
+          echo '73a2bdad7c9043ee761dee7d29a5abff0263b8761db7067acafdc9030d3db0cc  evidence/benches/prepared_review_evidence/fixtures-synthetic.tar.gz' | sha256sum -c -
+          mkdir -p /tmp/pr106-fixtures
+          tar -xzf evidence/benches/prepared_review_evidence/fixtures-synthetic.tar.gz -C /tmp/pr106-fixtures
+          cd /tmp/pr106-fixtures
+          sha256sum -c "$GITHUB_WORKSPACE/candidate/benches/pr106-final-api/evidence/fixtures.sha256"
+      - name: Runner unit tests
+        run: python3 -m unittest discover -s candidate/benches/pr106-final-api -p 'test_*.py' -v
+      - name: Build pinned upstream and final PR API arms
+        run: |
+          (cd upstream && cargo build --locked --profile ci -p xark-groth16 --example bench_verified_warm)
+          (cd candidate && cargo build --locked --profile ci -p xark-groth16 --example bench_prepared_api)
+      - name: Proof and statement smoke
+        run: |
+          taskset -c "$PINNED_CPUS" python3 candidate/benches/pr106-final-api/replay.py \
+            upstream/target/ci/examples/bench_verified_warm \
+            candidate/target/ci/examples/bench_prepared_api \
+            /tmp/pr106-fixtures candidate/benches/pr106-final-api/evidence/fixtures.sha256 \
+            /tmp/pr106-smoke --upstream-source upstream --prepared-source candidate --smoke
+      - name: Stability-gated matched replay
+        run: |
+          taskset -c "$PINNED_CPUS" python3 candidate/benches/pr106-final-api/replay.py \
+            upstream/target/ci/examples/bench_verified_warm \
+            candidate/target/ci/examples/bench_prepared_api \
+            /tmp/pr106-fixtures candidate/benches/pr106-final-api/evidence/fixtures.sha256 \
+            /tmp/pr106-replay --upstream-source upstream --prepared-source candidate
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr106-final-api-linux-receipts
+          path: |
+            topology.json
+            cpu-pair.txt
+            /tmp/pr106-smoke
+            /tmp/pr106-replay
