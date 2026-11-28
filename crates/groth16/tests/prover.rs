@@ -2221,6 +2221,12 @@ fn prepared_cpu_prover_checks_and_isolates_typed_requests() {
     malformed.vk.gamma_abc_g1.clear();
     assert!(PreparedCpuProver::new(KYC_XBC, malformed).is_err());
     let mut malformed = pk.clone();
+    malformed.h_query.pop();
+    match PreparedCpuProver::new(KYC_XBC, malformed) {
+        Err(error) => assert!(error.0.contains("h_query")),
+        Ok(_) => panic!("accepted a key with a truncated quotient domain"),
+    }
+    let mut malformed = pk.clone();
     malformed.b_g2_query[0] = G2Affine::new_unchecked(Fq2::zero(), Fq2::ONE);
     assert!(PreparedCpuProver::new(KYC_XBC, malformed).is_err());
     // Use full-order multiplication to select an on-curve point that the
@@ -2258,6 +2264,12 @@ fn prepared_cpu_prover_checks_and_isolates_typed_requests() {
     match prepared.prove(invalid) {
         Err(error) => assert_eq!(error.0, "duplicate circuit input"),
         Ok(_) => panic!("accepted a duplicate typed input"),
+    }
+    let mut invalid = input("20200101", None);
+    invalid.0.pop();
+    match prepared.prove(invalid) {
+        Err(error) => assert_eq!(error.0, "missing circuit input"),
+        Ok(_) => panic!("accepted a missing typed input"),
     }
     assert!(prepared.prove(input("20200101", Some("0"))).is_err());
     let (a, b) = std::thread::scope(|scope| {
