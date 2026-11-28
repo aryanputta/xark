@@ -1,6 +1,8 @@
 name: ICICLE lockfile refresh
 on:
   workflow_dispatch:
+  push:
+    branches: [review/cuda-icicle-g1-v05]
 jobs:
   generate:
     runs-on: ubuntu-latest
