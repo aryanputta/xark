@@ -18,6 +18,10 @@ synthetic requests exercise real Privacy Rings circuits and produce real,
 verified proofs. The fixture manifest SHA-256 is
 `0436bedbae33912331d7306b9c1406956be5695d43f85f5c750f19bbb9bcce41`.
 The fixture archive and raw receipts must accompany any published speed claim.
+The fixture archive is retained in the
+[public evidence bundle](https://github.com/aryanputta/xark/blob/913825b/benches/prepared_review_evidence/fixtures-synthetic.tar.gz)
+at SHA-256 `73a2bdad7c9043ee761dee7d29a5abff0263b8761db7067acafdc9030d3db0cc`.
+Its 28-file manifest is checked in at [evidence/fixtures.sha256](evidence/fixtures.sha256).
 
 Build each arm in its own clean worktree, with the same profile and target CPU:
 
@@ -53,3 +57,28 @@ independent performance audit. The API still requires callers to authenticate
 XBC and key ownership; this replay does not establish soundness of an unaudited
 circuit, constant-time witness handling, complete memory erasure, or side-channel
 equivalence. The CPU backend remains variable-time.
+
+The final-head Mac correctness smoke is retained at
+[evidence/smoke-2026-11-28](evidence/smoke-2026-11-28).
+It completed four varied measured requests and one verified warmup for each
+arm and circuit; every valid proof passed both verifiers, and both rejected
+altered and cross-request statements. Its `performance_eligible` value is
+`false`, so its request timings do not support a speed claim or break-even
+estimate.
+
+The final-head Mac control run is retained at
+[evidence/control-2026-11-28](evidence/control-2026-11-28).
+All 256 control proofs completed and passed the proof and statement checks.
+No arm comparison ran. The host failed all four same-binary control pairs:
+
+| Circuit | Arm | p50 drift | p95 drift |
+| --- | --- | ---: | ---: |
+| Escrow | Upstream | 41.34% | 50.04% |
+| Escrow | Prepared | 19.37% | 18.92% |
+| Withdrawal | Upstream | 1.27% | 16.93% |
+| Withdrawal | Prepared | 11.33% | 43.83% |
+
+The gate allows at most 2% p50 and 10% p95 drift. This macOS host also fails
+the two-distinct-physical-Linux-core topology requirement. These receipts
+confirm the proof paths work, but they do not establish a speedup or
+break-even count. A matched replay on an eligible host remains open.

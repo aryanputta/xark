@@ -1,0 +1,133 @@
+{
+  "source_commits": {
+    "upstream": "d126d3cb2a306e7c53d9fc7638dc7860ce086b30",
+    "prepared": "e80d77536692ee5f73389027713c60bb1029cbef"
+  },
+  "binary_sha256": {
+    "upstream": "03d4c767b6138869ed658e96c37558c4ceb2a81432dbe4e16ce3e500d0b5a3da",
+    "prepared": "fa185728c6397301bc44ee56f5d0c1a52986dc562bec33a7777963871019e24c"
+  },
+  "manifest_sha256": "0436bedbae33912331d7306b9c1406956be5695d43f85f5c750f19bbb9bcce41",
+  "host": {
+    "platform": "macOS-26.5.1-x86_64-i386-64bit-Mach-O",
+    "affinity": null,
+    "physical_core_ids": [],
+    "load_1m": 40.240234375
+  },
+  "workers": 2,
+  "topology_ok": false,
+  "smoke": true,
+  "performance_eligible": false,
+  "controls": [],
+  "control_failures": [],
+  "measurements": [
+    {
+      "tag": "measure-escrow-b1-upstream",
+      "circuit": "escrow",
+      "arm": "upstream",
+      "setup_ns": 1609853679,
+      "services_ns": [
+        670476322,
+        533922444,
+        912235181,
+        919223422
+      ],
+      "p50_ns": 791355751.5,
+      "p95_ns": 919223422,
+      "peak_rss_bytes": 152236032,
+      "load_after": 37.978515625
+    },
+    {
+      "tag": "measure-escrow-b1-prepared",
+      "circuit": "escrow",
+      "arm": "prepared",
+      "setup_ns": 4525821899,
+      "services_ns": [
+        744041658,
+        738655574,
+        733963122,
+        776198358
+      ],
+      "p50_ns": 741348616.0,
+      "p95_ns": 776198358,
+      "peak_rss_bytes": 118542336,
+      "load_after": 48.00732421875
+    },
+    {
+      "tag": "measure-withdrawal-b1-upstream",
+      "circuit": "withdrawal",
+      "arm": "upstream",
+      "setup_ns": 1374036949,
+      "services_ns": [
+        719549520,
+        667796245,
+        802780959,
+        855560601
+      ],
+      "p50_ns": 761165239.5,
+      "p95_ns": 855560601,
+      "peak_rss_bytes": 108728320,
+      "load_after": 47.12548828125
+    },
+    {
+      "tag": "measure-withdrawal-b1-prepared",
+      "circuit": "withdrawal",
+      "arm": "prepared",
+      "setup_ns": 3895816159,
+      "services_ns": [
+        751132205,
+        771480303,
+        711329072,
+        779503564
+      ],
+      "p50_ns": 761306254.0,
+      "p95_ns": 779503564,
+      "peak_rss_bytes": 95592448,
+      "load_after": 58.326171875
+    }
+  ],
+  "summary": {
+    "escrow": {
+      "arms": {
+        "upstream": {
+          "samples": 4,
+          "warm_p50_ns": 791355751.5,
+          "warm_p95_ns": 919223422,
+          "preparation_ns_median": 1609853679,
+          "peak_rss_bytes": 152236032
+        },
+        "prepared": {
+          "samples": 4,
+          "warm_p50_ns": 741348616.0,
+          "warm_p95_ns": 776198358,
+          "preparation_ns_median": 4525821899,
+          "peak_rss_bytes": 118542336
+        }
+      },
+      "p50_saved_ns": 50007135.5,
+      "extra_preparation_ns": 2915968220,
+      "break_even_requests": null
+    },
+    "withdrawal": {
+      "arms": {
+        "upstream": {
+          "samples": 4,
+          "warm_p50_ns": 761165239.5,
+          "warm_p95_ns": 855560601,
+          "preparation_ns_median": 1374036949,
+          "peak_rss_bytes": 108728320
+        },
+        "prepared": {
+          "samples": 4,
+          "warm_p50_ns": 761306254.0,
+          "warm_p95_ns": 779503564,
+          "preparation_ns_median": 3895816159,
+          "peak_rss_bytes": 95592448
+        }
+      },
+      "p50_saved_ns": -141014.5,
+      "extra_preparation_ns": 2521779210,
+      "break_even_requests": null
+    }
+  }
+}
