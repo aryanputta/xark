@@ -1,6 +1,8 @@
 name: PR106 prepared buffer cleanup ablation
 
 on:
+  push:
+    branches: [bench/pr106-cleanup-ablation]
   workflow_dispatch:
 
 jobs:
