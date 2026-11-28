@@ -1,0 +1,64 @@
+resident CPU: a_query_len=7606 merge_below=4096 merged=false
+resident includes row checks: true
+witness row checker: expanded
+changed statement rejected by Arkworks and Xark for each backend
+warm prove: xark-groth16 0.491753s
+warm prove: xark-groth16 0.458208s
+warm prove: xark-groth16 0.488222s
+warm prove: xark-groth16 0.468998s
+warm prove: xark-groth16 0.470039s
+warm prove: xark-groth16 0.461974s
+warm prove: xark-groth16 0.483991s
+warm prove: xark-groth16 0.467830s
+warm prove: xark-groth16 0.463108s
+warm prove: xark-groth16 0.482366s
+warm prove: xark-groth16 0.463883s
+warm prove: xark-groth16 0.476148s
+warm prove: xark-groth16 0.447169s
+warm prove: xark-groth16 0.493852s
+warm prove: xark-groth16 0.471688s
+warm prove: xark-groth16 0.771028s
+warm prove: xark-groth16 0.899104s
+warm prove: xark-groth16 0.875959s
+warm prove: xark-groth16 0.791895s
+warm prove: xark-groth16 0.726316s
+warm prove: xark-groth16 0.618268s
+warm prove: xark-groth16 0.477800s
+warm prove: xark-groth16 0.486296s
+warm prove: xark-groth16 0.506521s
+warm prove: xark-groth16 0.455603s
+warm prove: xark-groth16 0.486291s
+warm prove: xark-groth16 0.463297s
+warm prove: xark-groth16 0.479549s
+warm prove: xark-groth16 0.459678s
+warm prove: xark-groth16 0.485226s
+warm row check: xark-groth16 77054656 ns
+warm row check: xark-groth16 53828978 ns
+warm row check: xark-groth16 54165958 ns
+warm row check: xark-groth16 65457389 ns
+warm row check: xark-groth16 54848006 ns
+warm row check: xark-groth16 57968477 ns
+warm row check: xark-groth16 57088882 ns
+warm row check: xark-groth16 53051028 ns
+warm row check: xark-groth16 53388424 ns
+warm row check: xark-groth16 71789175 ns
+warm row check: xark-groth16 56080021 ns
+warm row check: xark-groth16 54505408 ns
+warm row check: xark-groth16 53752585 ns
+warm row check: xark-groth16 52572593 ns
+warm row check: xark-groth16 57356879 ns
+warm row check: xark-groth16 108321890 ns
+warm row check: xark-groth16 90504803 ns
+warm row check: xark-groth16 87503432 ns
+warm row check: xark-groth16 128499002 ns
+warm row check: xark-groth16 90429921 ns
+warm row check: xark-groth16 92716171 ns
+warm row check: xark-groth16 55109714 ns
+warm row check: xark-groth16 59329521 ns
+warm row check: xark-groth16 55669662 ns
+warm row check: xark-groth16 57392319 ns
+warm row check: xark-groth16 62425233 ns
+warm row check: xark-groth16 56281040 ns
+warm row check: xark-groth16 55634552 ns
+warm row check: xark-groth16 54190374 ns
+warm row check: xark-groth16 57142882 ns

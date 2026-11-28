@@ -1,0 +1,305 @@
+warning: unused workspace dependency `ark-poly`
+  --> Cargo.toml:63:1
+   |
+63 | ark-poly = { version = "0.6", default-features = false, features = ["parallel"] }
+   | ^^^^^^^^
+   |
+   = note: `cargo::unused_workspace_dependencies` is set to `warn` by default
+help: consider removing the workspace dependency `ark-poly`
+warning: unused field `edition` in `workspace.package`
+  --> Cargo.toml:50:1
+   |
+50 | edition = "2024"
+   | ^^^^^^^
+   |
+   = note: `cargo::unused_workspace_package_fields` is set to `warn` by default
+help: consider removing the field `workspace.package.edition`
+warning: workspace (manifest) generated 2 warnings
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> gadgets/xark-blake3/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+22 ~ 
+23 + [lints]
+24 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+22 ~ 
+23 + [lints]
+   |
+warning: `xark-blake3` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> gadgets/xark-mimc/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+23 ~ xark-ir = { path = "../../crates/ir" }
+24 + [lints]
+25 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+23 ~ xark-ir = { path = "../../crates/ir" }
+24 + [lints]
+   |
+warning: `xark-mimc` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> gadgets/xark-aes/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+26 ~ ghash = "0.5"
+27 + [lints]
+28 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+26 ~ ghash = "0.5"
+27 + [lints]
+   |
+warning: `xark-aes` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> gadgets/xark-keccak/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+21 ~ xark-hash.workspace = true
+22 + [lints]
+23 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+21 ~ xark-hash.workspace = true
+22 + [lints]
+   |
+warning: `xark-keccak` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> gadgets/xark-sha256/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+21 ~ xark-hash.workspace = true
+22 + [lints]
+23 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+21 ~ xark-hash.workspace = true
+22 + [lints]
+   |
+warning: `xark-sha256` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> crates/frontend/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+21 ~ rustc-demangle = "0.1"
+22 + [lints]
+23 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+21 ~ rustc-demangle = "0.1"
+22 + [lints]
+   |
+warning: `xark-frontend` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> crates/ir/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+40 ~ crypto-bigint = { version = "0.7", default-features = false }
+41 + [lints]
+42 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+40 ~ crypto-bigint = { version = "0.7", default-features = false }
+41 + [lints]
+   |
+warning: `xark-ir` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> crates/test-harness/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+17 ~ serde_json = "1"
+18 + [lints]
+19 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+17 ~ serde_json = "1"
+18 + [lints]
+   |
+warning: `xark-test-harness` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> gadgets/xark-blake2s/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+22 ~ 
+23 + [lints]
+24 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+22 ~ 
+23 + [lints]
+   |
+warning: `xark-blake2s` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> gadgets/xark-pedersen/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+23 ~ xark-ir = { path = "../../crates/ir" }
+24 + [lints]
+25 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+23 ~ xark-ir = { path = "../../crates/ir" }
+24 + [lints]
+   |
+warning: `xark-pedersen` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> crates/prover/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+44 ~ serde_json = "1"
+45 + [lints]
+46 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+44 ~ serde_json = "1"
+45 + [lints]
+   |
+warning: `xark-prover` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> crates/backend/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+39 ~ test-deterministic = []
+40 + [lints]
+41 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+39 ~ test-deterministic = []
+40 + [lints]
+   |
+warning: `xark-backend` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> xtask/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+15 ~ xark-ir.workspace = true
+16 + [lints]
+17 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+15 ~ xark-ir.workspace = true
+16 + [lints]
+   |
+warning: `xtask` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> crates/cli/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+46 ~ mimalloc = "0.1"
+47 + [lints]
+48 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+46 ~ mimalloc = "0.1"
+47 + [lints]
+   |
+warning: `xark-cli` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> crates/wasm/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+47 ~ serde_json = "1"
+48 + [lints]
+49 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+47 ~ serde_json = "1"
+48 + [lints]
+   |
+warning: `xark-wasm` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> crates/schema/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+23 ~ serde_json = "1"
+24 + [lints]
+25 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+23 ~ serde_json = "1"
+24 + [lints]
+   |
+warning: `xark-schema` (manifest) generated 1 warning
+warning: missing `[lints]` to inherit `[workspace.lints]`
+  --> gadgets/xark-poseidon/Cargo.toml
+   = note: `cargo::missing_lints_inheritance` is set to `warn` by default
+help: to inherit `workspace.lints, add:
+   |
+19 ~ xark.workspace = true
+20 + [lints]
+21 + workspace = true
+   |
+help: to clarify your intent to not inherit, add:
+   |
+19 ~ xark.workspace = true
+20 + [lints]
+   |
+warning: `xark-poseidon` (manifest) generated 1 warning
+   Compiling xark-groth16 v0.5.0 (/content/xark-compiled-rows.5cU5bM/source/crates/groth16)
+    Finished `release` profile [optimized] target(s) in 2m 14s
+     Running tests/prover.rs (/content/xark-compiled-rows.5cU5bM/target/release/build/xark-groth16/34699229ac55ea63/out/prover-34699229ac55ea63)
+
+running 25 tests
+test a_row_file_fits_by_file_hash_or_digest ... ok
+test a_spill_file_leaves_nothing_on_disk ... ok
+test bytecode_rows_equal_the_reduced_expansion ... ok
+test bytecode_streamed_proof_matches_arkworks ... ok
+test compiled_row_check_reports_the_same_first_failure_as_expansion ... ok
+test compiled_template_evaluation_equals_expansion ... ok
+test dev_setup_is_byte_identical_to_arkworks ... ok
+test every_prover_makes_the_same_proof ... ok
+test first_unsatisfied_finds_the_failing_row ... ok
+test h_is_bit_identical_to_arkworks_witness_map ... ok
+test key_header_versions_parse ... ok
+test key_shape_mismatch_is_reported ... ok
+test malformed_worker_sums_fall_back_to_cpu_in_both_provers ... ok
+test ordering_contract_matches_arkworks_allocation ... ok
+test partial_g1_acceleration_falls_back_to_cpu_in_both_provers ... ok
+test phase2_setup_is_byte_identical_to_the_backend ... ok
+test proof_is_byte_identical_to_arkworks_and_verifies ... ok
+test push_prover_any_chunking_matches_arkworks ... ok
+test reordering_variables_breaks_the_proof ... ok
+test row_file_source_matches_arkworks_and_proves ... ok
+test serialized_pk_rejects_vector_lengths_that_overflow_byte_offsets ... ok
+test smooth_domain_keys_and_proofs_match_arkworks_mixed_radix ... ok
+test spilled_quotient_and_proof_are_identical ... ok
+test transcoding_and_tee_produce_the_uncompressed_key ... ok
+test worker_decomposition_is_byte_identical ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 43.15s
+

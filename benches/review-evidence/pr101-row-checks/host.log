@@ -1,0 +1,15 @@
+Wed Nov 25 09:19:01 PM UTC 2026
+Linux x86_64
+CPU(s):                                  2
+Model name:                              Intel(R) Xeon(R) CPU @ 2.20GHz
+Thread(s) per core:                      2
+Core(s) per socket:                      1
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+binary: rustc
+commit-hash: 0ef1bc386059596dada8fb65b50425aab2ea637a
+commit-date: 2026-11-09
+host: x86_64-unknown-linux-gnu
+release: 1.100.0
+LLVM version: 23.1.5
+666558a9c2f862892f20ca39b4d8a30cd0c5a365	refs/heads/master
+03a7f519d28df6718f7ce6dda41f1e57e5ea55db	refs/heads/xark-0.5
