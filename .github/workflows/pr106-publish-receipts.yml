@@ -1,0 +1,48 @@
+name: Preserve PR106 raw benchmark receipts
+
+on:
+  push:
+    branches: [bench/pr106-review-evidence]
+    paths: [.github/workflows/pr106-publish-receipts.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  preserve:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr106-final-api-linux-receipts
+          repository: aryanputta/xark
+          run-id: 46123497775
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: benches/pr106-final-api/evidence/raw/final-attempt1
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr106-final-api-linux-receipts
+          repository: aryanputta/xark
+          run-id: 46124119529
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: benches/pr106-final-api/evidence/raw/final-attempt2
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr106-cleanup-ablation-receipts
+          repository: aryanputta/xark
+          run-id: 46124920790
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: benches/pr106-final-api/evidence/raw/cleanup-ablation
+      - name: Independently reparse and screen raw files
+        run: |
+          python3 benches/pr106-final-api/verify_transferred_receipts.py \
+            benches/pr106-final-api/evidence/raw
+      - name: Commit verified public benchmark receipts
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add benches/pr106-final-api/evidence/raw
+          git commit -m 'evidence: retain verified PR106 raw benchmark receipts'
+          git push origin HEAD:bench/pr106-review-evidence
