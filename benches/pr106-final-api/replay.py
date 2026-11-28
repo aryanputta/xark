@@ -19,7 +19,7 @@ from pathlib import Path
 
 UPSTREAM_PARENT = "03a7f519d28df6718f7ce6dda41f1e57e5ea55db"
 UPSTREAM_HEAD = "d126d3cb2a306e7c53d9fc7638dc7860ce086b30"
-PREPARED_PARENT = "ddce2df8ea5d8f624a5ed6da5eac149a8dd6b04a"
+PREPARED_PARENT = "5cadc60e1aca6f5ed557da41c501d4f3f89e3549"
 UPSTREAM_MARKER = "upstream timed self-check and serialization: 1"
 PREPARED_MARKER = "prepared final public API: 1"
 RECEIPT = re.compile(r"request verified index=(\d+) fixture=(\d+) service_ns=(\d+)")

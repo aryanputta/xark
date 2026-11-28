@@ -1,7 +1,7 @@
 # PR #106 final API replay
 
 This benchmark-only branch descends from the final PR #106 implementation at
-`ddce2df8ea5d8f624a5ed6da5eac149a8dd6b04a`. The candidate example invokes
+`5cadc60e1aca6f5ed557da41c501d4f3f89e3549`. The candidate example invokes
 `PreparedCpuProver::prove` without any library patch. The upstream arm is the
 benchmark-only `bench/upstream-api-equivalent` wrapper at
 `d126d3cb2a306e7c53d9fc7638dc7860ce086b30`, descended from the current
