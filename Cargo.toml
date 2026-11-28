@@ -5,6 +5,7 @@ members = [
     "crates/verifier",
     "crates/groth16",
     "crates/groth16-opencl",
+    "crates/groth16-icicle",
     "crates/frontend",
     "gadgets/tests",
     "gadgets/xark-aes",
