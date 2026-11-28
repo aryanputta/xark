@@ -17,10 +17,10 @@ jobs:
         with:
           path: harness
           persist-credentials: false
-      - name: Check out final PR 106 source
+      - name: Check out final PR 106 with benchmark-only export adapter
         uses: actions/checkout@v4
         with:
-          ref: 5cadc60e1aca6f5ed557da41c501d4f3f89e3549
+          ref: ae50460ea20b6215b0e4ebbfe306b1d9d5762547
           path: candidate
           persist-credentials: false
       - name: Check out public fixture evidence
@@ -98,7 +98,7 @@ jobs:
         run: |
           python3 harness/benches/competitive/build_xark.py \
             --source "$PWD/candidate" \
-            --expected-commit 5cadc60e1aca6f5ed557da41c501d4f3f89e3549 \
+            --expected-commit ae50460ea20b6215b0e4ebbfe306b1d9d5762547 \
             --target-dir "$RUNNER_TEMP/xark-target"
           python3 harness/benches/competitive/build_gnark.py \
             --source "$PWD/harness" --expected-commit "$GITHUB_SHA" \
@@ -118,7 +118,7 @@ jobs:
               'version': 2,
               'fixtures': str(temp / 'fixtures'),
               'sources': {
-                  'xark': {'path': str(root / 'candidate'), 'commit': '5cadc60e1aca6f5ed557da41c501d4f3f89e3549'},
+                  'xark': {'path': str(root / 'candidate'), 'commit': 'ae50460ea20b6215b0e4ebbfe306b1d9d5762547'},
                   'gnark': {'path': str(root / 'harness'), 'commit': os.environ['GITHUB_SHA']},
               },
               'binaries': {
@@ -139,6 +139,14 @@ jobs:
           taskset -c "$cpus" python3 harness/benches/competitive/run.py \
             --config "$RUNNER_TEMP/gnark-run.json" --output "$RUNNER_TEMP/gnark-smoke" \
             --competitor gnark --pairs 2 --samples 2 --warmups 1
+      - name: Show smoke diagnostics on failure
+        if: failure()
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          if [ -d "$RUNNER_TEMP/gnark-smoke" ]; then
+            find "$RUNNER_TEMP/gnark-smoke" -maxdepth 1 -name '*.log' -type f -print -exec tail -n 60 {} \;
+          fi
       - name: Frozen host control
         env:
           RUNNER_TEMP: ${{ runner.temp }}

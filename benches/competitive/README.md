@@ -125,6 +125,11 @@ same-binary pairs to stay within the preset 2% p50 and 10% p95 drift limits.
 Retain failed-control receipts. This lane times resident row checks and proving
 on an exported identical relation and witness; it is distinct from the
 `PreparedCpuProver::prove` full request interval in PR #106.
+The hosted replay builds Xark from benchmark-only commit
+[`ae50460e`](https://github.com/aryanputta/xark/commit/ae50460ea20b6215b0e4ebbfe306b1d9d5762547),
+which has exact PR #106 head `5cadc60e` as its parent and ports the resident
+proof export example needed for this lane. Its extra changes are confined to
+the benchmark example and support files; they are not in PR #106.
 
 ```sh
 python3 benches/competitive/run.py --config /path/to/run.json \
