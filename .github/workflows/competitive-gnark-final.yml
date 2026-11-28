@@ -144,6 +144,12 @@ jobs:
         env:
           RUNNER_TEMP: ${{ runner.temp }}
         run: |
+          for log in "$RUNNER_TEMP/xark-target/build.stderr" "$RUNNER_TEMP/gnark-target/build.stderr"; do
+            if [ -f "$log" ]; then
+              echo "$log"
+              tail -n 100 "$log"
+            fi
+          done
           if [ -d "$RUNNER_TEMP/gnark-smoke" ]; then
             find "$RUNNER_TEMP/gnark-smoke" -maxdepth 1 -name '*.log' -type f -print -exec tail -n 60 {} \;
           fi
