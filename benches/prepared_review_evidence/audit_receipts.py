@@ -54,6 +54,8 @@ def check_run(directory, expected_source, expected_controls, expected_measured):
         require(parsed["services_ns"] == row["services_ns"], f"service samples: {receipt}")
         require(parsed["waves"] == row["waves"], f"waves: {receipt}")
         require(parsed["setup_ns"] == row["setup_ns"], f"setup: {receipt}")
+        require(statistics.median(parsed["services_ns"]) == row["service_p50_ns"], f"run p50: {receipt}")
+        require(p95(parsed["services_ns"]) == row["service_p95_ns"], f"run p95: {receipt}")
         stderr = (directory / f"{tag}.stderr").read_text().splitlines()
         require(stderr.count("prepared stream solver: 1") == 1, f"solver mode: {receipt}")
         require(stderr.count(f"prepared satisfaction-only: {int(row['arm'] == 'satisfied')}") == 1, f"satisfaction mode: {receipt}")
