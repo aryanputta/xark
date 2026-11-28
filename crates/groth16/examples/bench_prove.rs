@@ -23,8 +23,7 @@
 //! `BENCH_CHECK_ROWS=1` includes witness row checks in warm timing for Gnark.
 //! `BENCH_CHECK_ROWS=expanded` checks by expanding rows and leaves the prover's
 //! row evaluator unchanged. Both print the check duration after verification.
-//! For split resident CPU proofs, `BENCH_RESIDENT_PROFILE=1` records task spans.
-//! Use it with `BENCH_TIME=1 BENCH_WARM_BACKEND=cpu` and an SDK statement directory.
+//! Resident task profiling is unavailable in this benchmark-only port.
 //! For either Privacy Rings timelock fixture, set `BENCH_PUBLIC_STATEMENTS` to
 //! the directory containing `public.json` and `public-changed.json`.
 //! `query-msm` takes that directory as an argument and times the decoded B1
@@ -40,9 +39,8 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use ark_bn254::{Bn254, Fr};
 use ark_groth16::Groth16;
@@ -194,62 +192,6 @@ impl Probe for Phases {
         if phase != "start" {
             Phases::mark(self, phase);
         }
-    }
-}
-
-struct TimedProof<'a>(&'a xark_groth16::prover::ResidentTimingSink<'a>);
-
-impl Probe for TimedProof<'_> {
-    fn resident_timings(&self) -> Option<&xark_groth16::prover::ResidentTimingSink<'_>> {
-        Some(self.0)
-    }
-}
-
-struct TaskSpan {
-    phase: &'static str,
-    offset: Duration,
-    elapsed: Duration,
-}
-
-struct ProfiledCpu<'a, P> {
-    cpu: Cpu<P>,
-    profiles: &'a mut Vec<Vec<TaskSpan>>,
-}
-
-impl<P: xark_groth16::PkSource> Prover for ProfiledCpu<'_, P> {
-    fn name(&self) -> &str {
-        self.cpu.name()
-    }
-
-    fn prove(
-        &mut self,
-        src: &dyn ConstraintSource,
-        z: &[Fr],
-        r: Fr,
-        s: Fr,
-    ) -> Result<xark_groth16::Proof<Bn254>, xark_groth16::ProveError> {
-        let spans = Mutex::new(Vec::new());
-        let origin = Instant::now();
-        let record = |phase, started: Instant, elapsed| {
-            spans.lock().unwrap().push(TaskSpan {
-                phase,
-                offset: started.duration_since(origin),
-                elapsed,
-            });
-        };
-        let proof = xark_groth16::prove_with_randomness(
-            src,
-            z,
-            &mut self.cpu.pk,
-            r,
-            s,
-            &self.cpu.cfg,
-            &mut TimedProof(&record),
-        )?;
-        let mut spans = spans.into_inner().unwrap();
-        spans.sort_unstable_by_key(|event| event.offset);
-        self.profiles.push(spans);
-        Ok(proof)
     }
 }
 
@@ -502,20 +444,10 @@ fn main() {
                 .and_then(|value| value.parse().ok())
                 .expect("BENCH_MERGE_BELOW must be a nonnegative integer");
         }
-        let profile = std::env::var_os("BENCH_RESIDENT_PROFILE").is_some();
-        if profile {
-            assert!(!tracking(), "set BENCH_TIME=1 for resident task timing");
-            assert_eq!(std::env::var("BENCH_WARM_BACKEND").as_deref(), Ok("cpu"));
-            assert!(
-                pk.a_query.len() >= cfg.merge_below,
-                "resident task timing uses split MSMs"
-            );
-            assert!(
-                changed_public_hash.is_some(),
-                "resident task timing needs the SDK statements"
-            );
-        }
-        let mut profiles = Vec::new();
+        assert!(
+            std::env::var_os("BENCH_RESIDENT_PROFILE").is_none(),
+            "resident task profiling is unavailable on this pinned #106 source"
+        );
         let mut provers: Vec<Box<dyn Prover + '_>> = Vec::new();
         match std::env::var("BENCH_WARM_BACKEND").as_deref() {
             Ok("both") | Err(std::env::VarError::NotPresent) => {
@@ -531,14 +463,7 @@ fn main() {
             pk.a_query.len() < cfg.merge_below
         );
         let cpu = Cpu::new(xark_groth16::InMemoryPk::new(&pk), cfg);
-        if profile {
-            provers.push(Box::new(ProfiledCpu {
-                cpu,
-                profiles: &mut profiles,
-            }));
-        } else {
-            provers.push(Box::new(cpu));
-        }
+        provers.push(Box::new(cpu));
         // Each prover's proofs back to back, as a prove-many server makes them
         // (and as gnark's benchmark times its own), not one interleaved with the
         // other's: a millisecond proof right after an arkworks one measures the
@@ -648,21 +573,6 @@ fn main() {
             }
         }
         drop(provers);
-        if profile {
-            assert_eq!(profiles.len(), warmups + runs);
-            for (sample, spans) in profiles.iter().skip(warmups).enumerate() {
-                assert!(!spans.is_empty(), "split resident timing produced no spans");
-                for span in spans {
-                    println!(
-                        "resident task: {} {} {} {}",
-                        sample + 1,
-                        span.phase,
-                        span.offset.as_nanos(),
-                        span.elapsed.as_nanos()
-                    );
-                }
-            }
-        }
         return;
     }
     if mode == "phases" {
