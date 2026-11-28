@@ -1,0 +1,111 @@
+name: PR106 prepared buffer cleanup ablation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ablation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: bench
+      - uses: actions/checkout@v4
+        with:
+          repository: aryanputta/xark
+          ref: 2b7190abbc6fc1696f23a23fb049d7917416ccc1
+          path: before
+      - uses: actions/checkout@v4
+        with:
+          repository: aryanputta/xark
+          ref: 98ef685895a9c594938ae6528e8e57bfaf637734
+          path: cleanup
+      - uses: actions/checkout@v4
+        with:
+          repository: aryanputta/xark
+          ref: 5cadc60e1aca6f5ed557da41c501d4f3f89e3549
+          path: guarded
+      - uses: actions/checkout@v4
+        with:
+          repository: aryanputta/xark
+          ref: 913825bb3a520bd248ff5d3b398b705c585f5cd7
+          path: evidence
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Select two physical cores and verify fixtures
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          selected = {}
+          rows = []
+          for cpu in sorted(os.sched_getaffinity(0)):
+              base = Path(f'/sys/devices/system/cpu/cpu{cpu}/topology')
+              key = ((base / 'physical_package_id').read_text().strip(),
+                     (base / 'core_id').read_text().strip())
+              selected.setdefault(key, cpu)
+              rows.append({'cpu': cpu, 'package': key[0], 'core': key[1]})
+          if len(selected) < 2:
+              raise SystemExit('two distinct physical cores unavailable')
+          pair = list(selected.values())[:2]
+          Path('cpu-pair.txt').write_text(','.join(map(str, pair)) + '\n')
+          Path('topology.json').write_text(json.dumps({'cores': rows, 'selected': pair,
+                                                        'load_1m': os.getloadavg()[0]}, indent=2) + '\n')
+          print(f'selected physical-core CPUs: {pair}')
+          PY
+          echo "PINNED_CPUS=$(cat cpu-pair.txt)" >> "$GITHUB_ENV"
+          echo '73a2bdad7c9043ee761dee7d29a5abff0263b8761db7067acafdc9030d3db0cc  evidence/benches/prepared_review_evidence/fixtures-synthetic.tar.gz' | sha256sum -c -
+          mkdir -p /tmp/pr106-fixtures
+          tar -xzf evidence/benches/prepared_review_evidence/fixtures-synthetic.tar.gz -C /tmp/pr106-fixtures
+          cd /tmp/pr106-fixtures
+          sha256sum -c "$GITHUB_WORKSPACE/bench/benches/pr106-final-api/evidence/fixtures.sha256"
+      - name: Runner tests
+        run: python3 -m unittest discover -s bench/benches/pr106-final-api -p 'test_*.py' -v
+      - name: Build identical public API callers at three source commits
+        run: |
+          for source in before cleanup guarded; do
+            cp bench/crates/groth16/examples/bench_prepared_api.rs "$source/crates/groth16/examples/bench_prepared_api.rs"
+            (cd "$source" && cargo build --locked --profile ci -p xark-groth16 --example bench_prepared_api)
+          done
+      - name: Stability-gated cleanup ablation
+        run: |
+          taskset -c "$PINNED_CPUS" python3 bench/benches/pr106-final-api/cleanup_cost.py \
+            --before-source before --before-binary before/target/ci/examples/bench_prepared_api \
+            --cleanup-source cleanup --cleanup-binary cleanup/target/ci/examples/bench_prepared_api \
+            --guarded-source guarded --guarded-binary guarded/target/ci/examples/bench_prepared_api \
+            --example bench/crates/groth16/examples/bench_prepared_api.rs \
+            --fixtures /tmp/pr106-fixtures \
+            --manifest bench/benches/pr106-final-api/evidence/fixtures.sha256 \
+            --output /tmp/pr106-cleanup-ablation
+      - name: Print source and control measurements
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('/tmp/pr106-cleanup-ablation/report.json')
+          if not path.exists():
+              print('No ablation report was written')
+              raise SystemExit(0)
+          report = json.loads(path.read_text())
+          print(json.dumps({'source_commits': report['source_commits'],
+                            'binary_sha256': report['binary_sha256'],
+                            'example_sha256': report['example_sha256'],
+                            'manifest_sha256': report['manifest_sha256'],
+                            'topology_ok': report['topology_ok'],
+                            'control_failures': report['control_failures'],
+                            'controls': [{key: row[key] for key in
+                                          ('tag', 'p50_ns', 'p95_ns', 'setup_ns', 'peak_rss_bytes')}
+                                         for row in report['controls']]}, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr106-cleanup-ablation-receipts
+          path: |
+            topology.json
+            cpu-pair.txt
+            /tmp/pr106-cleanup-ablation
