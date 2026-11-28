@@ -77,13 +77,21 @@ def host():
             "load_1m": os.getloadavg()[0]}
 
 
+def command_for(binary, arm, reference, fixture_dirs, count):
+    command = [str(binary), "warm-requests", str(reference / "circuit.xbc"),
+               str(reference / "test-key.bin")]
+    if arm == "upstream":
+        command.append("cpu")
+    elif arm != "prepared":
+        raise ValueError(f"unknown arm {arm}")
+    return [*command, "1", str(count), *map(str, fixture_dirs)]
+
+
 def run(binary, arm, circuit, fixture_dirs, reference, count, workers, output, tag):
     stdout, stderr = output / f"{tag}.stdout", output / f"{tag}.stderr"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("BENCH_", "RAYON_"))}
     env["RAYON_NUM_THREADS"] = str(workers)
-    command = [str(binary), "warm-requests", str(reference / "circuit.xbc"),
-               str(reference / "test-key.bin"), "cpu" if arm == "upstream" else "1",
-               str(count), *map(str, fixture_dirs)]
+    command = command_for(binary, arm, reference, fixture_dirs, count)
     with stdout.open("x") as out, stderr.open("x") as err:
         proc = subprocess.Popen(command, stdout=out, stderr=err, env=env)
         _, status, usage = os.wait4(proc.pid, 0)

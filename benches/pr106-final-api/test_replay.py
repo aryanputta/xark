@@ -1,9 +1,18 @@
 import unittest
+from pathlib import Path
 
-from replay import control_failures, parse, summarize
+from replay import command_for, control_failures, parse, summarize
 
 
 class ReceiptTest(unittest.TestCase):
+    def test_commands_match_each_wrapper(self):
+        base = ["/bin/prover", "warm-requests", "/fixtures/circuit.xbc", "/fixtures/test-key.bin"]
+        dirs = [Path("/fixtures/request-1"), Path("/fixtures/request-2")]
+        self.assertEqual(command_for("/bin/prover", "upstream", Path("/fixtures"), dirs, 4),
+                         [*base, "cpu", "1", "4", *map(str, dirs)])
+        self.assertEqual(command_for("/bin/prover", "prepared", Path("/fixtures"), dirs, 4),
+                         [*base, "1", "4", *map(str, dirs)])
+
     def test_complete_receipt(self):
         lines = [f"request verified index={i} fixture={i % 4} service_ns={i + 1}" for i in range(8)]
         lines.append("requests verified mode=cpu concurrency=1 threads=2 count=8 setup_ns=10 altered=rejected cross_request=rejected")
