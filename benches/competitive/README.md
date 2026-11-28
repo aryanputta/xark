@@ -131,6 +131,13 @@ which descends from exact PR #106 head `5cadc60e` and ports the resident
 proof export example needed for this lane. Its extra changes are confined to
 the benchmark example and support files; they are not in PR #106. The port
 omits the older task profiling hook absent from #106's prover API.
+The hosted replay checks ADX and BMI2 CPU support and builds this Xark
+example with `RUSTFLAGS='-C target-feature=+adx,+bmi2'`; its Xark build
+manifest records the flag. This is an opt-in x86 build experiment, not the
+default CPU artifact or a change to the PR #106 production API. The prior
+[portable attempt](https://github.com/aryanputta/xark/actions/runs/46128682526)
+passed the control cohort but failed the measured cohort's frozen host gate,
+so it has no accepted competitor speed percentage.
 
 ```sh
 python3 benches/competitive/run.py --config /path/to/run.json \

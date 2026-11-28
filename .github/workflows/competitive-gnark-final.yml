@@ -96,6 +96,9 @@ jobs:
           RUNNER_TEMP: ${{ runner.temp }}
           GITHUB_SHA: ${{ github.sha }}
         run: |
+          grep -qw adx /proc/cpuinfo
+          grep -qw bmi2 /proc/cpuinfo
+          RUSTFLAGS='-C target-feature=+adx,+bmi2' \
           python3 harness/benches/competitive/build_xark.py \
             --source "$PWD/candidate" \
             --expected-commit 7d82e00b6343df1bb9f13073999f7b33b73ef7d3 \
