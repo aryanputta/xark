@@ -1,0 +1,180 @@
+name: Competitive Gnark final-head replay
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [bench/competitive-gnark-final]
+
+jobs:
+  paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Check out benchmark harness
+        uses: actions/checkout@v4
+        with:
+          path: harness
+          persist-credentials: false
+      - name: Check out final PR 106 source
+        uses: actions/checkout@v4
+        with:
+          ref: 5cadc60e1aca6f5ed557da41c501d4f3f89e3549
+          path: candidate
+          persist-credentials: false
+      - name: Check out public fixture evidence
+        uses: actions/checkout@v4
+        with:
+          ref: 913825bb3a520bd248ff5d3b398b705c585f5cd7
+          path: evidence
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: harness/benches/privacy-rings-gnark/go.mod
+          cache-dependency-path: harness/benches/privacy-rings-gnark/go.sum
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Unit checks and source checks
+        working-directory: harness
+        run: |
+          python3 -m unittest discover -s benches/competitive -p 'test_*.py' -v
+          python3 -m py_compile benches/competitive/*.py
+          git diff --check
+      - name: Verify and extract real synthetic fixtures
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          archive = Path('evidence/benches/prepared_review_evidence/fixtures-synthetic.tar.gz')
+          expected = '73a2bdad7c9043ee761dee7d29a5abff0263b8761db7067acafdc9030d3db0cc'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == expected
+          PY
+          mkdir -p "$RUNNER_TEMP/fixture-archive" "$RUNNER_TEMP/fixtures"
+          tar -xzf evidence/benches/prepared_review_evidence/fixtures-synthetic.tar.gz -C "$RUNNER_TEMP/fixture-archive"
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import shutil
+          archive = Path(os.environ['RUNNER_TEMP']) / 'fixture-archive'
+          out = Path(os.environ['RUNNER_TEMP']) / 'fixtures'
+          for workload in ('escrow', 'withdrawal'):
+              root = out / workload
+              root.mkdir()
+              for name in ('circuit.xbc', 'test-key.bin'):
+                  shutil.copy2(archive / 'reference' / workload / name, root / name)
+              requests = list((archive / 'requests' / workload / '1').glob('*/'))
+              assert len(requests) == 1
+              for name in ('inputs.json', 'public.json', 'public-changed.json'):
+                  shutil.copy2(requests[0] / name, root / name)
+          for line in Path('harness/benches/competitive/fixtures.sha256').read_text().splitlines():
+              digest, rel = line.split(maxsplit=1)
+              assert hashlib.sha256((out / rel).read_bytes()).hexdigest() == digest, rel
+          PY
+      - name: Select two distinct physical cores
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          groups = {}
+          for cpu in sorted(os.sched_getaffinity(0)):
+              root = Path(f'/sys/devices/system/cpu/cpu{cpu}/topology')
+              key = (int((root / 'physical_package_id').read_text()), int((root / 'core_id').read_text()))
+              groups.setdefault(key, cpu)
+          assert len(groups) >= 2, 'two physical cores unavailable'
+          cpus = list(groups.values())[:2]
+          Path(os.environ['RUNNER_TEMP'], 'cpu-pair.txt').write_text(','.join(map(str, cpus)))
+          print('Physical core selection:', cpus)
+          PY
+      - name: Build pinned independent executables
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          python3 harness/benches/competitive/build_xark.py \
+            --source "$PWD/candidate" \
+            --expected-commit 5cadc60e1aca6f5ed557da41c501d4f3f89e3549 \
+            --target-dir "$RUNNER_TEMP/xark-target"
+          python3 harness/benches/competitive/build_gnark.py \
+            --source "$PWD/harness" --expected-commit "$GITHUB_SHA" \
+            --target-dir "$RUNNER_TEMP/gnark-target"
+      - name: Freeze run manifest
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path.cwd()
+          temp = Path(os.environ['RUNNER_TEMP'])
+          config = {
+              'version': 2,
+              'fixtures': str(temp / 'fixtures'),
+              'sources': {
+                  'xark': {'path': str(root / 'candidate'), 'commit': '5cadc60e1aca6f5ed557da41c501d4f3f89e3549'},
+                  'gnark': {'path': str(root / 'harness'), 'commit': os.environ['GITHUB_SHA']},
+              },
+              'binaries': {
+                  'bench': str(temp / 'xark-target/release/examples/bench_prove'),
+                  'gnark': str(temp / 'gnark-target/privacy-rings-gnark'),
+              },
+              'xark_build_manifest': str(temp / 'xark-target/xark-build-manifest.json'),
+              'gnark_build_manifest': str(temp / 'gnark-target/gnark-build-manifest.json'),
+              'additional_artifacts': {},
+          }
+          (temp / 'gnark-run.json').write_text(json.dumps(config, indent=2) + '\n')
+          PY
+      - name: Verified proof smoke
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          cpus=$(cat "$RUNNER_TEMP/cpu-pair.txt")
+          taskset -c "$cpus" python3 harness/benches/competitive/run.py \
+            --config "$RUNNER_TEMP/gnark-run.json" --output "$RUNNER_TEMP/gnark-smoke" \
+            --competitor gnark --pairs 2 --samples 2 --warmups 1
+      - name: Frozen host control
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          cpus=$(cat "$RUNNER_TEMP/cpu-pair.txt")
+          taskset -c "$cpus" python3 harness/benches/competitive/run.py \
+            --config "$RUNNER_TEMP/gnark-run.json" --output "$RUNNER_TEMP/gnark-control" \
+            --competitor gnark --pairs 2 --samples 32 --warmups 3 --strict-contention
+          python3 harness/benches/competitive/gnark_gate.py "$RUNNER_TEMP/gnark-control" \
+            --pairs 2 --samples 32
+      - name: Frozen measured cohort
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          cpus=$(cat "$RUNNER_TEMP/cpu-pair.txt")
+          taskset -c "$cpus" python3 harness/benches/competitive/run.py \
+            --config "$RUNNER_TEMP/gnark-run.json" --output "$RUNNER_TEMP/gnark-measured" \
+            --competitor gnark --pairs 4 --samples 30 --warmups 3 --strict-contention
+          python3 harness/benches/competitive/gnark_gate.py "$RUNNER_TEMP/gnark-measured" \
+            --pairs 4 --samples 30
+      - name: Keep complete receipts, including failed controls
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gnark-final-head-receipts-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/gnark-run.json
+            ${{ runner.temp }}/cpu-pair.txt
+            ${{ runner.temp }}/xark-target/xark-build-manifest.json
+            ${{ runner.temp }}/xark-target/build.stdout
+            ${{ runner.temp }}/xark-target/build.stderr
+            ${{ runner.temp }}/gnark-target/gnark-build-manifest.json
+            ${{ runner.temp }}/gnark-target/build.stdout
+            ${{ runner.temp }}/gnark-target/build.stderr
+            ${{ runner.temp }}/gnark-smoke/**
+            ${{ runner.temp }}/gnark-control/**
+            ${{ runner.temp }}/gnark-measured/**
+          if-no-files-found: warn
+          retention-days: 30

@@ -6,6 +6,10 @@
       "path": "/path/to/xark",
       "commit": "REPLACE_WITH_FULL_CHECKOUT_COMMIT"
     },
+    "gnark": {
+      "path": "/path/to/competitive-harness-checkout",
+      "commit": "REPLACE_WITH_FULL_CHECKOUT_COMMIT"
+    },
     "rapidsnark": {
       "path": "/path/to/rapidsnark",
       "commit": "81eddf1a536d26497b237c0b8a04fe90baf7e439"
@@ -32,6 +36,7 @@
     "icicle_device": "/path/to/icicle/lib/libicicle_device.so"
   },
   "xark_build_manifest": "/path/to/new-empty-xark-target/xark-build-manifest.json",
+  "gnark_build_manifest": "/path/to/new-empty-gnark-target/gnark-build-manifest.json",
   "snarkjs": "/path/to/node_modules/snarkjs",
   "rapidsnark_ptau": {
     "path": "/path/to/prepared-bn254.ptau",

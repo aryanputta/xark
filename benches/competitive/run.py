@@ -19,6 +19,7 @@ import sys
 import time
 
 from build_xark import verify_manifest
+from build_gnark import verify_manifest as verify_gnark_manifest
 
 HERE = Path(__file__).resolve().parent
 COMPETITORS = ("xark", "gnark", "rapidsnark", "constantine", "icicle")
@@ -68,7 +69,7 @@ def optional_capture(command):
 def revisions(config, root, competitors):
     sources = config["sources"]
     needed = {"xark"}
-    needed.update(set(competitors) & {"rapidsnark", "constantine", "icicle"})
+    needed.update(set(competitors) & {"gnark", "rapidsnark", "constantine", "icicle"})
     require(needed <= sources.keys(), f"source pins required for {sorted(needed)}")
     result = {}
     for name in sorted(needed):
@@ -476,6 +477,17 @@ def run_suite(args):
     build_manifest = xark_build_record(config, root, sources["xark"], files["bench"])
     if build_manifest:
         files["xark_build_manifest"] = build_manifest
+    if "gnark" in competitors:
+        require(config.get("gnark_build_manifest"), "Gnark build manifest required")
+        gnark_manifest = (root / config["gnark_build_manifest"]).resolve(strict=True)
+        verified = verify_gnark_manifest(
+            gnark_manifest, Path(sources["gnark"]["path"]), files["gnark"]
+        )
+        require(
+            verified["source_commit"] == sources["gnark"]["commit"],
+            "Gnark build manifest has a different source commit",
+        )
+        files["gnark_build_manifest"] = gnark_manifest
     for name, path in config.get("additional_artifacts", {}).items():
         require(f"extra:{name}" not in files, f"duplicate additional artifact: {name}")
         files[f"extra:{name}"] = (root / path).resolve(strict=True)
@@ -563,7 +575,7 @@ def run_suite(args):
         "mode": "live",
         "status": "verified",
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
-        "fixture_archive_sha256": "82caa7cee2b155afc2bd32cdc9661ba8cfb758888f4837bf9d6af31eb05c36a7",
+        "fixture_archive_sha256": "73a2bdad7c9043ee761dee7d29a5abff0263b8761db7067acafdc9030d3db0cc",
         "runner_commit": capture(["git", "-C", str(HERE), "rev-parse", "HEAD"]),
         "workloads": workloads,
         "competitors": competitors,

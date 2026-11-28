@@ -22,13 +22,18 @@ All lanes use CPU execution.
 
 ## Fixture setup
 
-Use Python 3.11 or newer and a Unix host. Verify the archive checksum before
-extracting. Use a test-only directory and keep its contents private.
+Use Python 3.11 or newer and a Unix host. This revision uses the public
+synthetic fixture archive from the final PR #106 evidence commit
+[`913825bb`](https://github.com/aryanputta/xark/commit/913825bb3a520bd248ff5d3b398b705c585f5cd7).
+The hosted workflow copies its reference circuit and key plus the first
+verified request for each workload into the competitive fixture layout. It
+checks every copied file against `fixtures.sha256` before starting a proof.
+Keep extracted keys and witnesses in a private test-only directory.
 
 ```sh
 umask 077
-archive="$HOME/Downloads/aaa-xark-offline-fixtures.tar.gz"
-printf '%s  %s\n' 82caa7cee2b155afc2bd32cdc9661ba8cfb758888f4837bf9d6af31eb05c36a7 "$archive" |
+archive="$HOME/Downloads/fixtures-synthetic.tar.gz"
+printf '%s  %s\n' 73a2bdad7c9043ee761dee7d29a5abff0263b8761db7067acafdc9030d3db0cc "$archive" |
   shasum -a 256 -c -
 fixtures=$(mktemp -d)
 tar -xzf "$archive" -C "$fixtures"
@@ -36,11 +41,9 @@ tar -xzf "$archive" -C "$fixtures"
 ```
 
 The pinned application source for these fixtures is Privacy Rings examples
-`a02886da343e5f3a14d6d8a2843bdb3fd696d94e`. The earlier
-`xark-colab-proof-environment.zip`
-(`34b899e39eea1d55d8fd39779718668ca37fbe216a2a2593235bb35e50601ffc`)
-contains setup patches and the original environment script. This harness
-uses the hashed offline fixture release directly.
+`a02886da343e5f3a14d6d8a2843bdb3fd696d94e`. The archive contains
+synthetic requests that exercise real escrow and withdrawal circuits and
+produce verified proofs.
 
 ## Build and run
 
@@ -64,13 +67,19 @@ python3 benches/competitive/build_xark.py \
   --source "$root" --expected-commit "$pin" \
   --target-dir /path/to/new-empty-xark-target
 mkdir -p /path/to/bin
-(cd benches/privacy-rings-gnark &&
-  go build -mod=readonly -trimpath -o /path/to/bin/privacy-rings-gnark .)
+python3 benches/competitive/build_gnark.py \
+  --source "$root" --expected-commit "$pin" \
+  --target-dir /path/to/new-empty-gnark-target
 cp benches/competitive/config.example.json /path/to/run.json
 ```
 
 Set `binaries.bench` to the helper's `release/examples/bench_prove` executable
-and `xark_build_manifest` to its `xark-build-manifest.json`. Manifest version 2
+and `xark_build_manifest` to its `xark-build-manifest.json`. For a Gnark lane,
+set `sources.gnark`, `binaries.gnark`, and `gnark_build_manifest` to the
+competitive-harness checkout, its built adapter, and its build receipt. The
+Gnark helper pins `main.go`, `go.mod`, `go.sum`, the embedded module list,
+the binary hash and build logs. The runner verifies that receipt before timing.
+Manifest version 2
 requires a self-consistent Xark build record before any timed request. Version
 1 remains readable but reports the Xark build as `unattested`. The manifest is
 an auditable build record, not a cryptographic attestation of the compiler or
@@ -108,6 +117,25 @@ pairs are required so both orders appear. Opposite workloads start with
 opposite orders. The standalone `xark` lane repeats the native proof
 measurement. Select `xark-query` to run both native queries against
 Arkworks without installing an external MSM engine.
+
+For a public Gnark latency claim, run a control cohort before the measured
+cohort and audit each cohort with `gnark_gate.py`. It independently reparses
+every raw sample, matches the report's p50/p95/p99, and requires each backend's
+same-binary pairs to stay within the preset 2% p50 and 10% p95 drift limits.
+Retain failed-control receipts. This lane times resident row checks and proving
+on an exported identical relation and witness; it is distinct from the
+`PreparedCpuProver::prove` full request interval in PR #106.
+
+```sh
+python3 benches/competitive/run.py --config /path/to/run.json \
+  --output /path/to/control --competitor gnark --pairs 2 --samples 32 \
+  --warmups 3 --strict-contention
+python3 benches/competitive/gnark_gate.py /path/to/control --pairs 2 --samples 32
+python3 benches/competitive/run.py --config /path/to/run.json \
+  --output /path/to/measured --competitor gnark --pairs 4 --samples 30 \
+  --warmups 3 --strict-contention
+python3 benches/competitive/gnark_gate.py /path/to/measured --pairs 4 --samples 30
+```
 
 ## Read the output
 
