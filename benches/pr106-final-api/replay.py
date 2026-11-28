@@ -82,7 +82,8 @@ def run(binary, arm, circuit, fixture_dirs, reference, count, workers, output, t
     env = {k: v for k, v in os.environ.items() if not k.startswith(("BENCH_", "RAYON_"))}
     env["RAYON_NUM_THREADS"] = str(workers)
     command = [str(binary), "warm-requests", str(reference / "circuit.xbc"),
-               str(reference / "test-key.bin"), "1", str(count), *map(str, fixture_dirs)]
+               str(reference / "test-key.bin"), "cpu" if arm == "upstream" else "1",
+               str(count), *map(str, fixture_dirs)]
     with stdout.open("x") as out, stderr.open("x") as err:
         proc = subprocess.Popen(command, stdout=out, stderr=err, env=env)
         _, status, usage = os.wait4(proc.pid, 0)
